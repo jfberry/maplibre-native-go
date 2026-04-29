@@ -33,6 +33,12 @@ jobs:
 
       - name: Build maplibre-native-ffi
         if: steps.cache-ffi.outputs.cache-hit != 'true'
+        env:
+          # Authenticate mise's GitHub release downloads. macOS runners share
+          # an IP pool whose unauthenticated rate limit is exhausted within
+          # seconds, which silently breaks `mise install`.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git clone https://github.com/sargunv/maplibre-native-ffi "$MLN_FFI_DIR"
           cd "$MLN_FFI_DIR"
