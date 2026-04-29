@@ -1,9 +1,16 @@
 package maplibre
 
 /*
+#include <stdlib.h>
 #include "maplibre_native_abi.h"
 */
 import "C"
+
+import (
+	"fmt"
+	"time"
+	"unsafe"
+)
 
 // Map owns a maplibre-native map handle bound to the runtime that created it.
 // It is owner-thread affine to the runtime's dispatcher.
@@ -78,4 +85,131 @@ func (m *Map) Close() error {
 		m.ptr = nil
 	})
 	return err
+}
+
+// SetStyleURL loads a style by URL through the native style APIs.
+// Completion is signalled later via PollEvent (StyleLoaded or MapLoadingFailed).
+func (m *Map) SetStyleURL(url string) error {
+	cs := C.CString(url)
+	defer C.free(unsafe.Pointer(cs))
+	var err error
+	m.rt.d.do(func() {
+		status := C.mln_map_set_style_url(m.ptr, cs)
+		if status != C.MLN_STATUS_OK {
+			err = statusError("mln_map_set_style_url", status)
+		}
+	})
+	return err
+}
+
+// SetStyleJSON loads inline style JSON through the native style APIs.
+// Completion is signalled later via PollEvent (StyleLoaded or MapLoadingFailed).
+func (m *Map) SetStyleJSON(json string) error {
+	cs := C.CString(json)
+	defer C.free(unsafe.Pointer(cs))
+	var err error
+	m.rt.d.do(func() {
+		status := C.mln_map_set_style_json(m.ptr, cs)
+		if status != C.MLN_STATUS_OK {
+			err = statusError("mln_map_set_style_json", status)
+		}
+	})
+	return err
+}
+
+// EventType mirrors mln_map_event_type.
+type EventType uint32
+
+const (
+	EventNone               EventType = 0
+	EventCameraWillChange   EventType = 1
+	EventCameraIsChanging   EventType = 2
+	EventCameraDidChange    EventType = 3
+	EventStyleLoaded        EventType = 4
+	EventMapLoadingStarted  EventType = 5
+	EventMapLoadingFinished EventType = 6
+	EventMapLoadingFailed   EventType = 7
+	EventMapIdle            EventType = 8
+	EventRenderInvalidated  EventType = 9
+	EventRenderError        EventType = 10
+)
+
+func (e EventType) String() string {
+	switch e {
+	case EventNone:
+		return "NONE"
+	case EventCameraWillChange:
+		return "CAMERA_WILL_CHANGE"
+	case EventCameraIsChanging:
+		return "CAMERA_IS_CHANGING"
+	case EventCameraDidChange:
+		return "CAMERA_DID_CHANGE"
+	case EventStyleLoaded:
+		return "STYLE_LOADED"
+	case EventMapLoadingStarted:
+		return "MAP_LOADING_STARTED"
+	case EventMapLoadingFinished:
+		return "MAP_LOADING_FINISHED"
+	case EventMapLoadingFailed:
+		return "MAP_LOADING_FAILED"
+	case EventMapIdle:
+		return "MAP_IDLE"
+	case EventRenderInvalidated:
+		return "RENDER_INVALIDATED"
+	case EventRenderError:
+		return "RENDER_ERROR"
+	}
+	return fmt.Sprintf("UNKNOWN(%d)", uint32(e))
+}
+
+// Event mirrors mln_map_event with the message field copied to a Go string.
+type Event struct {
+	Type    EventType
+	Code    int32
+	Message string
+}
+
+// PollEvent pops the next queued map event, if any.
+func (m *Map) PollEvent() (Event, bool, error) {
+	var out Event
+	var has bool
+	var err error
+	m.rt.d.do(func() {
+		var cev C.mln_map_event
+		cev.size = C.uint32_t(unsafe.Sizeof(cev))
+		var hasEvent C.bool
+		status := C.mln_map_poll_event(m.ptr, &cev, &hasEvent)
+		if status != C.MLN_STATUS_OK {
+			err = statusError("mln_map_poll_event", status)
+			return
+		}
+		has = bool(hasEvent)
+		if has {
+			out = Event{
+				Type:    EventType(cev._type),
+				Code:    int32(cev.code),
+				Message: C.GoString(&cev.message[0]),
+			}
+		}
+	})
+	return out, has, err
+}
+
+// WaitForEvent polls until match returns true, the deadline passes, or an
+// error occurs. Returns the matched event on success.
+func (m *Map) WaitForEvent(timeout time.Duration, match func(Event) bool) (Event, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		ev, has, err := m.PollEvent()
+		if err != nil {
+			return Event{}, err
+		}
+		if has && match(ev) {
+			return ev, nil
+		}
+		if time.Now().After(deadline) {
+			return Event{}, fmt.Errorf("timeout after %s waiting for map event", timeout)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 }
