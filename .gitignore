@@ -1,0 +1,4 @@
+/poc
+*.test
+*.out
+.claude/
