@@ -1,9 +1,16 @@
 package maplibre
 
-/*
-#cgo CFLAGS: -I/Users/james/dev/maplibre-native-ffi/include
-#cgo LDFLAGS: -L/Users/james/dev/maplibre-native-ffi/build -lmaplibre_native_abi -Wl,-rpath,/Users/james/dev/maplibre-native-ffi/build
+// Cgo flags are supplied externally so the binding can be built against any
+// local maplibre-native-ffi checkout without patching source. The Makefile
+// exports CGO_CFLAGS and CGO_LDFLAGS based on MLN_FFI_DIR; downstream
+// projects can do the same. When upstream ships a pkg-config .pc file the
+// directive below can be replaced with:
+//
+//	// #cgo pkg-config: maplibre_native_abi
+//
+// See README.md for the supported build flows.
 
+/*
 #include "maplibre_native_abi.h"
 */
 import "C"
