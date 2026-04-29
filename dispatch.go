@@ -53,9 +53,9 @@ func (d *dispatcher) loop(started chan struct{}) {
 	for {
 		select {
 		case fn := <-d.cmds:
-			fn()
+			withAutoreleasePool(fn)
 		case <-tickC:
-			d.onTick()
+			withAutoreleasePool(d.onTick)
 		case <-d.quit:
 			return
 		}
