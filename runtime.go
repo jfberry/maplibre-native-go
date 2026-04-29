@@ -91,6 +91,11 @@ func (r *Runtime) Close() error {
 		}
 		r.ptr = nil
 	})
+	if err != nil {
+		// Native rejected destroy (e.g. live maps). Keep the dispatcher
+		// running so callers can close their maps and retry.
+		return err
+	}
 	r.d.close()
-	return err
+	return nil
 }
