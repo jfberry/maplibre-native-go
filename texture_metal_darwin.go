@@ -22,12 +22,6 @@ import (
 	"unsafe"
 )
 
-// TextureSession wraps an mln_texture_session attached via the Metal backend.
-type TextureSession struct {
-	m   *Map
-	ptr *C.mln_texture_session
-}
-
 // AttachMetalTexture creates a Metal texture session bound to the map.
 // Allocates a default Metal device internally. Use AttachMetalTextureWithDevice
 // if you need to share a device with another Metal consumer (e.g. a host
@@ -97,36 +91,6 @@ func (m *Map) AttachMetalTextureWithDevice(device unsafe.Pointer, width, height 
 	return s, nil
 }
 
-// Resize advances the session's generation and reallocates backing storage.
-func (s *TextureSession) Resize(width, height uint32, scaleFactor float64) error {
-	if s == nil || s.ptr == nil {
-		return &Error{Status: StatusInvalidArgument, Op: "TextureSession.Resize", Message: "session is closed"}
-	}
-	var err error
-	s.m.rt.d.do(func() {
-		status := C.mln_texture_resize(s.ptr, C.uint32_t(width), C.uint32_t(height), C.double(scaleFactor))
-		if status != C.MLN_STATUS_OK {
-			err = statusError("mln_texture_resize", status)
-		}
-	})
-	return err
-}
-
-// Render draws the latest map state into the offscreen texture.
-func (s *TextureSession) Render() error {
-	if s == nil || s.ptr == nil {
-		return &Error{Status: StatusInvalidArgument, Op: "TextureSession.Render", Message: "session is closed"}
-	}
-	var err error
-	s.m.rt.d.do(func() {
-		status := C.mln_texture_render(s.ptr)
-		if status != C.MLN_STATUS_OK {
-			err = statusError("mln_texture_render", status)
-		}
-	})
-	return err
-}
-
 // AcquireFrame borrows the most recently rendered Metal texture. Each acquire
 // must be balanced by ReleaseFrame before the next render or destroy.
 func (s *TextureSession) AcquireFrame() (TextureFrame, error) {
@@ -178,40 +142,6 @@ func (s *TextureSession) ReleaseFrame(f TextureFrame) error {
 		if status != C.MLN_STATUS_OK {
 			err = statusError("mln_metal_texture_release_frame", status)
 		}
-	})
-	return err
-}
-
-// Detach releases backend resources but keeps the session handle live for
-// destroy.
-func (s *TextureSession) Detach() error {
-	if s == nil || s.ptr == nil {
-		return nil
-	}
-	var err error
-	s.m.rt.d.do(func() {
-		status := C.mln_texture_detach(s.ptr)
-		if status != C.MLN_STATUS_OK {
-			err = statusError("mln_texture_detach", status)
-		}
-	})
-	return err
-}
-
-// Close destroys the session handle. If still attached, this detaches first.
-// Idempotent.
-func (s *TextureSession) Close() error {
-	if s == nil || s.ptr == nil {
-		return nil
-	}
-	var err error
-	s.m.rt.d.do(func() {
-		status := C.mln_texture_destroy(s.ptr)
-		if status != C.MLN_STATUS_OK {
-			err = statusError("mln_texture_destroy", status)
-			return
-		}
-		s.ptr = nil
 	})
 	return err
 }

@@ -1,9 +1,9 @@
-//go:build darwin
+//go:build linux
 
 package maplibre
 
 import "testing"
 
 func attachSmokeSession(_ *testing.T, m *Map) (*TextureSession, error) {
-	return m.AttachMetalTexture(256, 256, 1)
+	return m.AttachVulkanTexture(256, 256, 1)
 }

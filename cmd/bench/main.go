@@ -70,9 +70,9 @@ func main() {
 	}
 	log.Printf("style loaded")
 
-	sess, err := m.AttachMetalTexture(uint32(*width), uint32(*height), *scale)
+	sess, err := attachSession(m, uint32(*width), uint32(*height), *scale)
 	if err != nil {
-		log.Fatalf("AttachMetalTexture: %v", err)
+		log.Fatalf("attachSession: %v", err)
 	}
 	defer sess.Close()
 

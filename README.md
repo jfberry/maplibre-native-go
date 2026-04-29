@@ -12,7 +12,8 @@ Go bindings for the [maplibre-native-ffi](https://github.com/sargunv/maplibre-na
 - Style URL + inline style JSON
 - Camera ops: `GetCamera`, `JumpTo`, `MoveBy`, `ScaleBy`, `RotateBy`, `PitchBy`, `CancelTransitions`
 - Map event polling (`PollEvent`, `WaitForEvent`)
-- Metal texture session on macOS — attach, resize, render, acquire/release frame, detach, destroy
+- Metal texture session on macOS — `AttachMetalTexture` / `AttachMetalTextureWithDevice`, resize, render, acquire/release frame, detach, destroy
+- Vulkan texture session on Linux — `AttachVulkanTexture` (default Mesa lavapipe context internally) / `AttachVulkanTextureWithContext` (caller-supplied `VkInstance`/`VkPhysicalDevice`/`VkDevice`/`VkQueue`)
 - `Map.RenderStill` — drives the static-render protocol (initial render → re-render on every `RENDER_INVALIDATED` until `MAP_IDLE`) and returns the acquired frame
 - Stress benchmark (`cmd/bench`) demonstrating stable steady-state RSS
 
@@ -27,8 +28,8 @@ Go bindings for the [maplibre-native-ffi](https://github.com/sargunv/maplibre-na
 ## Requirements
 
 - Go 1.23+
-- A built `libmaplibre_native_abi` from [maplibre-native-ffi](https://github.com/sargunv/maplibre-native-ffi). The dylib lives at `$MLN_FFI_DIR/build/libmaplibre_native_abi.dylib` (macOS) or `.so` (Linux). Build it with `cd $MLN_FFI_DIR && mise run build` (the upstream tooling expects `mise` + `pixi`).
-- macOS 13+ with the Metal framework available.
+- A built `libmaplibre_native_abi` from [maplibre-native-ffi](https://github.com/sargunv/maplibre-native-ffi). The library lives at `$MLN_FFI_DIR/build/libmaplibre_native_abi.dylib` (macOS) or `.so` (Linux). Build it with `cd $MLN_FFI_DIR && mise run build` (the upstream tooling expects `mise` + `pixi`).
+- macOS 13+ with the Metal framework available, **or** Linux with Vulkan (`apt-get install libvulkan-dev mesa-vulkan-drivers vulkan-tools` for a CPU-only Mesa lavapipe deploy).
 - (For `examples/sdl3-metal` only) SDL3 from Homebrew: `brew install sdl3`.
 
 ## Build

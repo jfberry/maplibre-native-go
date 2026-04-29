@@ -12,7 +12,8 @@ env:
   MLN_FFI_DIR: ${{ github.workspace }}/.maplibre-native-ffi
 
 jobs:
-  test:
+  test-darwin:
+    name: Test (macOS, Metal)
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -34,9 +35,6 @@ jobs:
       - name: Build maplibre-native-ffi
         if: steps.cache-ffi.outputs.cache-hit != 'true'
         env:
-          # Authenticate mise's GitHub release downloads. macOS runners share
-          # an IP pool whose unauthenticated rate limit is exhausted within
-          # seconds, which silently breaks `mise install`.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -51,6 +49,64 @@ jobs:
         run: |
           ls -la "$MLN_FFI_DIR/build/libmaplibre_native_abi.dylib"
           file "$MLN_FFI_DIR/build/libmaplibre_native_abi.dylib"
+
+      - name: go vet
+        run: |
+          eval "$(make env)"
+          go vet ./...
+
+      - name: go test (-race)
+        run: make test
+
+      - name: go build (all packages)
+        run: make build
+
+  test-linux:
+    name: Test (Linux, Vulkan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Install Vulkan + helpers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libvulkan-dev mesa-vulkan-drivers vulkan-tools pkg-config curl
+          vulkaninfo --summary || true
+
+      - name: Install mise
+        run: |
+          curl -fsSL https://mise.run | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Restore maplibre-native-ffi build cache
+        id: cache-ffi
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.MLN_FFI_DIR }}
+          key: ${{ runner.os }}-${{ runner.arch }}-ffi-${{ env.MLN_FFI_COMMIT }}
+
+      - name: Build maplibre-native-ffi
+        if: steps.cache-ffi.outputs.cache-hit != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git clone https://github.com/sargunv/maplibre-native-ffi "$MLN_FFI_DIR"
+          cd "$MLN_FFI_DIR"
+          git checkout "$MLN_FFI_COMMIT"
+          mise trust
+          mise install
+          mise run build
+
+      - name: Verify .so
+        run: |
+          ls -la "$MLN_FFI_DIR/build/libmaplibre_native_abi.so"
+          file "$MLN_FFI_DIR/build/libmaplibre_native_abi.so"
 
       - name: go vet
         run: |

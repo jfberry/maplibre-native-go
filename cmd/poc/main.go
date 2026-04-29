@@ -88,9 +88,9 @@ func main() {
 	log.Printf("camera: lat=%.4f lon=%.4f zoom=%.2f bearing=%.1f pitch=%.1f",
 		got.Latitude, got.Longitude, got.Zoom, got.Bearing, got.Pitch)
 
-	sess, err := m.AttachMetalTexture(uint32(*width), uint32(*height), *scale)
+	sess, err := attachSession(m, uint32(*width), uint32(*height), *scale)
 	if err != nil {
-		log.Fatalf("AttachMetalTexture: %v", err)
+		log.Fatalf("attachSession: %v", err)
 	}
 	defer func() {
 		if err := sess.Close(); err != nil {
