@@ -12,9 +12,7 @@
 package main
 
 import (
-	"errors"
 	"flag"
-	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -101,9 +99,9 @@ func main() {
 	}()
 	log.Printf("metal texture session attached")
 
-	frame, renders, err := renderUntilIdle(m, sess, *timeout)
+	frame, renders, err := m.RenderStill(sess, *timeout)
 	if err != nil {
-		log.Fatalf("renderUntilIdle: %v", err)
+		log.Fatalf("RenderStill: %v", err)
 	}
 	log.Printf("settled after %d renders", renders)
 	log.Printf("frame: gen=%d id=%d %dx%d @%v fmt=%d texture=%p device=%p",
@@ -117,54 +115,6 @@ func main() {
 		log.Fatalf("Detach: %v", err)
 	}
 	log.Printf("done")
-}
-
-// renderUntilIdle drives the static-render protocol. After the initial
-// render, RENDER_INVALIDATED fires whenever a tile or asset arrives; each
-// of those requires another render to draw the new content. MAP_IDLE
-// fires once the renderer reports it is fully loaded after a render call,
-// at which point the frame is the canonical settled view.
-func renderUntilIdle(m *maplibre.Map, sess *maplibre.TextureSession, timeout time.Duration) (maplibre.TextureFrame, int, error) {
-	deadline := time.Now().Add(timeout)
-	if err := sess.Render(); err != nil {
-		return maplibre.TextureFrame{}, 0, fmt.Errorf("Render: %w", err)
-	}
-	renders := 1
-
-	for time.Now().Before(deadline) {
-		ev, has, err := m.PollEvent()
-		if err != nil {
-			return maplibre.TextureFrame{}, renders, fmt.Errorf("PollEvent: %w", err)
-		}
-		if !has {
-			time.Sleep(2 * time.Millisecond)
-			continue
-		}
-		switch ev.Type {
-		case maplibre.EventRenderInvalidated:
-			err := sess.Render()
-			if err == nil {
-				renders++
-				continue
-			}
-			var mlnErr *maplibre.Error
-			if errors.As(err, &mlnErr) && mlnErr.Status == maplibre.StatusInvalidState {
-				// "no render update available" — renderer caught up between
-				// the invalidation and this call. Keep polling.
-				continue
-			}
-			return maplibre.TextureFrame{}, renders, fmt.Errorf("Render: %w", err)
-		case maplibre.EventMapIdle:
-			frame, err := sess.AcquireFrame()
-			if err != nil {
-				return maplibre.TextureFrame{}, renders, fmt.Errorf("AcquireFrame: %w", err)
-			}
-			return frame, renders, nil
-		case maplibre.EventMapLoadingFailed, maplibre.EventRenderError:
-			return maplibre.TextureFrame{}, renders, fmt.Errorf("%s: code=%d msg=%q", ev.Type, ev.Code, ev.Message)
-		}
-	}
-	return maplibre.TextureFrame{}, renders, fmt.Errorf("timeout after %s without MAP_IDLE (renders=%d)", timeout, renders)
 }
 
 // loadStyle accepts a URL, a filesystem path, an inline JSON document, or "".

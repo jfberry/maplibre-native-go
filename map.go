@@ -213,3 +213,79 @@ func (m *Map) WaitForEvent(timeout time.Duration, match func(Event) bool) (Event
 		time.Sleep(2 * time.Millisecond)
 	}
 }
+
+// StillRenderer is the texture-session subset that RenderStill needs.
+// Both Metal and Vulkan TextureSession satisfy it.
+type StillRenderer interface {
+	Render() error
+	AcquireFrame() (TextureFrame, error)
+}
+
+// RenderStill drives the static-render protocol against sess: render once,
+// then re-render on every RENDER_INVALIDATED event until MAP_IDLE arrives.
+// At that point the renderer reports it is fully loaded after the most
+// recent render and the acquired frame is the canonical settled view.
+//
+// Returns the acquired frame (caller must release), the number of render
+// calls issued, or an error.
+//
+// The function does not own the frame lifetime; callers must call
+// sess.ReleaseFrame on the returned frame before the next render or
+// destroy.
+func (m *Map) RenderStill(sess StillRenderer, timeout time.Duration) (TextureFrame, int, error) {
+	deadline := time.Now().Add(timeout)
+	if err := sess.Render(); err != nil {
+		return TextureFrame{}, 0, err
+	}
+	renders := 1
+
+	for time.Now().Before(deadline) {
+		ev, has, err := m.PollEvent()
+		if err != nil {
+			return TextureFrame{}, renders, err
+		}
+		if !has {
+			time.Sleep(2 * time.Millisecond)
+			continue
+		}
+		switch ev.Type {
+		case EventRenderInvalidated:
+			err := sess.Render()
+			if err == nil {
+				renders++
+				continue
+			}
+			var mlnErr *Error
+			if asMLN(err, &mlnErr) && mlnErr.Status == StatusInvalidState {
+				continue
+			}
+			return TextureFrame{}, renders, err
+		case EventMapIdle:
+			frame, err := sess.AcquireFrame()
+			if err != nil {
+				return TextureFrame{}, renders, err
+			}
+			return frame, renders, nil
+		case EventMapLoadingFailed, EventRenderError:
+			return TextureFrame{}, renders, fmt.Errorf("%s: code=%d msg=%q", ev.Type, ev.Code, ev.Message)
+		}
+	}
+	return TextureFrame{}, renders, fmt.Errorf("RenderStill: timeout after %s without MAP_IDLE (renders=%d)", timeout, renders)
+}
+
+// asMLN is errors.As specialised to *Error to avoid importing errors here.
+func asMLN(err error, target **Error) bool {
+	for err != nil {
+		if e, ok := err.(*Error); ok {
+			*target = e
+			return true
+		}
+		type unwrapper interface{ Unwrap() error }
+		u, ok := err.(unwrapper)
+		if !ok {
+			return false
+		}
+		err = u.Unwrap()
+	}
+	return false
+}

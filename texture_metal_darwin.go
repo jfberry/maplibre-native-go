@@ -28,19 +28,6 @@ type TextureSession struct {
 	ptr *C.mln_texture_session
 }
 
-// TextureFrame mirrors mln_metal_texture_frame. Texture and Device are
-// borrowed Metal handles valid only until the frame is released.
-type TextureFrame struct {
-	Generation  uint64
-	Width       uint32
-	Height      uint32
-	ScaleFactor float64
-	FrameID     uint64
-	Texture     unsafe.Pointer // id<MTLTexture>
-	Device      unsafe.Pointer // id<MTLDevice>
-	PixelFormat uint64         // MTLPixelFormat
-}
-
 // AttachMetalTexture creates a Metal texture session bound to the map.
 // Allocates a default Metal device internally.
 func (m *Map) AttachMetalTexture(width, height uint32, scaleFactor float64) (*TextureSession, error) {
