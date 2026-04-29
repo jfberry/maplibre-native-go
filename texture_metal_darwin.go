@@ -29,29 +29,48 @@ type TextureSession struct {
 }
 
 // AttachMetalTexture creates a Metal texture session bound to the map.
-// Allocates a default Metal device internally.
+// Allocates a default Metal device internally. Use AttachMetalTextureWithDevice
+// if you need to share a device with another Metal consumer (e.g. a host
+// CAMetalLayer compositor).
 func (m *Map) AttachMetalTexture(width, height uint32, scaleFactor float64) (*TextureSession, error) {
-	if m == nil || m.ptr == nil {
-		return nil, &Error{
-			Status:  StatusInvalidArgument,
-			Op:      "Map.AttachMetalTexture",
-			Message: "map is closed",
-		}
-	}
-	if width == 0 || height == 0 || scaleFactor <= 0 {
-		return nil, &Error{
-			Status:  StatusInvalidArgument,
-			Op:      "Map.AttachMetalTexture",
-			Message: fmt.Sprintf("invalid dimensions: %dx%d @%v", width, height, scaleFactor),
-		}
-	}
-
 	device := C.MTLCreateSystemDefaultDevice()
 	if device == nil {
 		return nil, &Error{
 			Status:  StatusUnsupported,
 			Op:      "Map.AttachMetalTexture",
 			Message: "MTLCreateSystemDefaultDevice returned nil",
+		}
+	}
+	return m.AttachMetalTextureWithDevice(unsafe.Pointer(device), width, height, scaleFactor)
+}
+
+// AttachMetalTextureWithDevice creates a Metal texture session bound to the
+// map using a caller-provided id<MTLDevice>. The device must remain valid for
+// the lifetime of the texture session.
+//
+// Use this variant when the host renderer (e.g. a CAMetalLayer compositor)
+// already owns a device and you want maplibre's offscreen texture to live on
+// the same device so it can be sampled directly without cross-device copies.
+func (m *Map) AttachMetalTextureWithDevice(device unsafe.Pointer, width, height uint32, scaleFactor float64) (*TextureSession, error) {
+	if m == nil || m.ptr == nil {
+		return nil, &Error{
+			Status:  StatusInvalidArgument,
+			Op:      "Map.AttachMetalTextureWithDevice",
+			Message: "map is closed",
+		}
+	}
+	if device == nil {
+		return nil, &Error{
+			Status:  StatusInvalidArgument,
+			Op:      "Map.AttachMetalTextureWithDevice",
+			Message: "device must not be nil",
+		}
+	}
+	if width == 0 || height == 0 || scaleFactor <= 0 {
+		return nil, &Error{
+			Status:  StatusInvalidArgument,
+			Op:      "Map.AttachMetalTextureWithDevice",
+			Message: fmt.Sprintf("invalid dimensions: %dx%d @%v", width, height, scaleFactor),
 		}
 	}
 

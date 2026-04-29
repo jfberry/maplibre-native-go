@@ -27,6 +27,7 @@ Go bindings for the [maplibre-native-ffi](https://github.com/sargunv/maplibre-na
 - Go 1.23+
 - A built `libmaplibre_native_abi` from [maplibre-native-ffi](https://github.com/sargunv/maplibre-native-ffi). The dylib lives at `$MLN_FFI_DIR/build/libmaplibre_native_abi.dylib` (macOS) or `.so` (Linux). Build it with `cd $MLN_FFI_DIR && mise run build` (the upstream tooling expects `mise` + `pixi`).
 - macOS 13+ with the Metal framework available.
+- (For `examples/sdl3-metal` only) SDL3 from Homebrew: `brew install sdl3`.
 
 ## Build
 
@@ -146,6 +147,19 @@ Run your own:
 ```bash
 make bench MLN_FFI_DIR=... # adjust flags in cmd/bench/main.go via -flag=...
 ```
+
+## Examples
+
+- [`cmd/poc`](cmd/poc/main.go) — full lifecycle demo, prints frame info from a single render.
+- [`cmd/bench`](cmd/bench/main.go) — stress benchmark, prints p50/p99 frame time and RSS progression.
+- [`examples/sdl3-metal`](examples/sdl3-metal/main.go) — interactive SDL3 window with a Metal compositor that samples maplibre's offscreen texture into a `CAMetalLayer`. Requires `brew install sdl3`. Run with:
+
+  ```bash
+  eval "$(make env)"
+  go run ./examples/sdl3-metal \
+    -style=file:///abs/path/to/style.prepared.json \
+    -lat=55.07 -lon=-3.58 -zoom=8
+  ```
 
 ## License
 
