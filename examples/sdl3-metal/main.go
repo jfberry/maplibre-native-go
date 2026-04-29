@@ -1,3 +1,5 @@
+//go:build darwin
+
 // SDL3 + Metal + maplibre interactive example.
 //
 // Opens an SDL3 window with a Metal layer, runs a maplibre map off-screen

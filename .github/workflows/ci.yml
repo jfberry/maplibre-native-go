@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+env:
+  # Pinned upstream FFI commit. Bump when intentionally moving to a newer
+  # ABI; the binding tracks this commit's mln_abi_version exactly.
+  MLN_FFI_COMMIT: c314267438d9d3d835489f2360352be16c8c94c4
+  MLN_FFI_DIR: ${{ github.workspace }}/.maplibre-native-ffi
+
+jobs:
+  test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Install Homebrew dependencies
+        run: brew install mise sdl3
+
+      - name: Restore maplibre-native-ffi build cache
+        id: cache-ffi
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.MLN_FFI_DIR }}
+          key: ${{ runner.os }}-${{ runner.arch }}-ffi-${{ env.MLN_FFI_COMMIT }}
+
+      - name: Build maplibre-native-ffi
+        if: steps.cache-ffi.outputs.cache-hit != 'true'
+        run: |
+          git clone https://github.com/sargunv/maplibre-native-ffi "$MLN_FFI_DIR"
+          cd "$MLN_FFI_DIR"
+          git checkout "$MLN_FFI_COMMIT"
+          mise trust
+          mise install
+          mise run build
+
+      - name: Verify dylib
+        run: |
+          ls -la "$MLN_FFI_DIR/build/libmaplibre_native_abi.dylib"
+          file "$MLN_FFI_DIR/build/libmaplibre_native_abi.dylib"
+
+      - name: go vet
+        run: |
+          eval "$(make env)"
+          go vet ./...
+
+      - name: go test (-race)
+        run: make test
+
+      - name: go build (all packages)
+        run: make build

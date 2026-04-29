@@ -4,6 +4,8 @@ Go bindings for the [maplibre-native-ffi](https://github.com/sargunv/maplibre-na
 
 **Status: experimental.** The upstream ABI is unstable (`mln_abi_version() == 0`) and these bindings track it directly. Pin to a specific upstream commit and expect breaking changes between bumps.
 
+**Tested against maplibre-native-ffi commit** [`c314267`](https://github.com/sargunv/maplibre-native-ffi/commit/c314267438d9d3d835489f2360352be16c8c94c4). CI builds against this exact commit; bumping it is intentional.
+
 ## What works today
 
 - Runtime / Map / TextureSession lifecycle
@@ -56,6 +58,18 @@ To `go run` / `go test` outside the Makefile, source the cgo flags first:
 eval "$(make env)"
 go test ./...
 ```
+
+### Real-asset smoke test
+
+A `TestSmokeRealAssets` test exercises the full lifecycle (style + tiles + sprite + glyphs + render-until-idle) against assets you point at. Skipped by default; enable by setting `MLN_TEST_STYLE`:
+
+```bash
+eval "$(make env)"
+MLN_TEST_STYLE="file:///abs/path/to/style.prepared.json" \
+  go test -v -run TestSmokeRealAssets ./...
+```
+
+Optional env: `MLN_TEST_LAT`, `MLN_TEST_LON`, `MLN_TEST_ZOOM`, `MLN_TEST_TIMEOUT`.
 
 You will see a `ld: warning: ignoring duplicate libraries: '-lmaplibre_native_abi'` during the link. This is harmless — it's a known cgo behaviour when env-driven `CGO_LDFLAGS` are propagated through multiple cgo source files. The macOS linker dedupes correctly. Once upstream ships a `pkg-config` `.pc` file the binding will switch to `#cgo pkg-config:` and the warning disappears.
 
