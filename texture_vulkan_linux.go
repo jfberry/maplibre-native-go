@@ -22,6 +22,15 @@ typedef struct mln_go_vulkan_context {
 extern int  mln_go_vulkan_context_create(mln_go_vulkan_context *out,
                                          char *err_out, size_t err_len);
 extern void mln_go_vulkan_context_destroy(mln_go_vulkan_context *ctx);
+
+// Implemented in vulkan_readback_linux.c.
+extern int mln_go_vulkan_readback(
+    void *instance, void *physical_device, void *device, void *queue,
+    uint32_t queue_family_index,
+    void *image, uint32_t image_layout,
+    uint32_t width, uint32_t height,
+    uint8_t *out_rgba, size_t out_capacity,
+    char *err_out, size_t err_len);
 */
 import "C"
 
@@ -138,6 +147,10 @@ func (m *Map) AttachVulkanTextureWithContext(ctx VulkanContext, width, height ui
 	if err != nil {
 		return nil, err
 	}
+	// Stash the context so readbackFrame can find the queue/queue-family/
+	// physical device that aren't carried in TextureFrame.
+	data := &vulkanSessionData{ctx: ctx}
+	s.backend = unsafe.Pointer(data)
 	return s, nil
 }
 
@@ -173,16 +186,75 @@ func (s *TextureSession) AcquireFrame() (TextureFrame, error) {
 	return out, err
 }
 
-// readbackFrame for Vulkan is implemented in vulkan_readback_linux.{c,go}.
-// Until that lands the function returns StatusUnsupported so
-// Map.RenderStillImage{,Into} surface a clean error rather than dragging
-// in a stub that pretends to work.
-func readbackFrame(s *TextureSession, f TextureFrame, dst []byte) error {
-	return &Error{
-		Status:  StatusUnsupported,
-		Op:      "readbackFrame",
-		Message: "Vulkan readback not yet implemented (sargunv/maplibre-native-ffi#9)",
+// vulkanSessionData is held off-band via TextureSession.backend so
+// readbackFrame can find the Vulkan handles it needs (the frame only
+// carries VkImage and VkDevice; readback also needs the VkQueue + queue
+// family + VkPhysicalDevice).
+type vulkanSessionData struct {
+	ctx VulkanContext
+}
+
+func sessionVulkanContext(s *TextureSession) (VulkanContext, bool) {
+	if s == nil || s.backend == nil {
+		return VulkanContext{}, false
 	}
+	return (*vulkanSessionData)(s.backend).ctx, true
+}
+
+// readbackFrame copies the GPU contents of a Vulkan frame into dst as
+// tightly-packed premultiplied RGBA. Adapts the
+// vkCmdCopyImageToBuffer pattern from mbgl::vulkan::Texture2D::readImage.
+func readbackFrame(s *TextureSession, f TextureFrame, dst []byte) error {
+	if f.Texture == nil {
+		return &Error{
+			Status:  StatusInvalidArgument,
+			Op:      "readbackFrame",
+			Message: "frame VkImage is nil",
+		}
+	}
+	needed := int(f.Width) * int(f.Height) * 4
+	if len(dst) < needed {
+		return &Error{
+			Status:  StatusInvalidArgument,
+			Op:      "readbackFrame",
+			Message: fmt.Sprintf("dst length %d < needed %d", len(dst), needed),
+		}
+	}
+	ctx, ok := sessionVulkanContext(s)
+	if !ok {
+		return &Error{
+			Status:  StatusInvalidState,
+			Op:      "readbackFrame",
+			Message: "session has no Vulkan context",
+		}
+	}
+
+	var errBuf [256]C.char
+	var rc C.int
+	s.m.rt.d.do(func() {
+		rc = C.mln_go_vulkan_readback(
+			ctx.Instance,
+			ctx.PhysicalDevice,
+			ctx.Device,
+			ctx.GraphicsQueue,
+			C.uint32_t(ctx.GraphicsQueueFamily),
+			f.Texture,
+			C.uint32_t(f.Layout),
+			C.uint32_t(f.Width),
+			C.uint32_t(f.Height),
+			(*C.uint8_t)(unsafe.Pointer(&dst[0])),
+			C.size_t(len(dst)),
+			&errBuf[0], C.size_t(len(errBuf)),
+		)
+	})
+	if rc != 0 {
+		return &Error{
+			Status:  StatusNativeError,
+			Op:      "mln_go_vulkan_readback",
+			Message: C.GoString(&errBuf[0]),
+		}
+	}
+	return nil
 }
 
 // ReleaseFrame returns ownership of a previously acquired Vulkan frame.

@@ -38,7 +38,8 @@ type TextureFrame struct {
 type TextureSession struct {
 	m       *Map
 	ptr     *C.mln_texture_session
-	cleanup func() // called on the dispatcher after destroy succeeds
+	cleanup func()         // called on the dispatcher after destroy succeeds
+	backend unsafe.Pointer // backend-private extras (e.g. *vulkanSessionData on linux)
 }
 
 // Resize advances the session's generation and reallocates backing storage.
