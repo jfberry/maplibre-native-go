@@ -7,8 +7,10 @@ else
 RPATH_FLAG := -Wl,-rpath=$(MLN_FFI_DIR)/build
 endif
 
-export CGO_CFLAGS  := -I$(MLN_FFI_DIR)/include
-export CGO_LDFLAGS := -L$(MLN_FFI_DIR)/build -lmaplibre_native_abi $(RPATH_FLAG)
+# pkg-config resolves -I, -L, -l for libmaplibre-native-c. We still set rpath
+# explicitly so the dylib is found at run time without DYLD_LIBRARY_PATH.
+export PKG_CONFIG_PATH := $(MLN_FFI_DIR)/build/pkgconfig:$(PKG_CONFIG_PATH)
+export CGO_LDFLAGS     := $(RPATH_FLAG)
 
 .PHONY: native build test poc bench env clean
 
@@ -29,7 +31,7 @@ bench:
 
 # `eval $(make env)` to source the cgo flags into your shell.
 env:
-	@echo 'export CGO_CFLAGS="$(CGO_CFLAGS)"'
+	@echo 'export PKG_CONFIG_PATH="$(PKG_CONFIG_PATH)"'
 	@echo 'export CGO_LDFLAGS="$(CGO_LDFLAGS)"'
 
 clean:

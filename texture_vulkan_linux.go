@@ -7,7 +7,7 @@ package maplibre
 
 #include <stdint.h>
 #include <stdlib.h>
-#include "maplibre_native_abi.h"
+#include "maplibre_native_c.h"
 
 // Mirrors the struct in vulkan_helper_linux.c. Field types are void* so the
 // Go side does not need <vulkan/vulkan.h>.

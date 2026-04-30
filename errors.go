@@ -2,7 +2,7 @@ package maplibre
 
 import "fmt"
 
-// Status mirrors the mln_status enum in maplibre_native_abi.h.
+// Status mirrors the mln_status enum in maplibre_native_c.h.
 //
 // Values are stable: zero is success, negative codes are failures.
 type Status int

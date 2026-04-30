@@ -1,25 +1,21 @@
 package maplibre
 
-// Cgo flags are supplied externally so the binding can be built against any
-// local maplibre-native-ffi checkout without patching source. The Makefile
-// exports CGO_CFLAGS and CGO_LDFLAGS based on MLN_FFI_DIR; downstream
-// projects can do the same. When upstream ships a pkg-config .pc file the
-// directive below can be replaced with:
-//
-//	// #cgo pkg-config: maplibre_native_abi
-//
-// See README.md for the supported build flows.
+// Cgo flags resolve via pkg-config. The Makefile prepends
+// $MLN_FFI_DIR/build/pkgconfig to PKG_CONFIG_PATH so that the binding tracks
+// any local maplibre-native-ffi checkout without patching source.
 
 /*
-#include "maplibre_native_abi.h"
+#cgo pkg-config: maplibre-native-c
+
+#include "maplibre_native_c.h"
 */
 import "C"
 
-// ABIVersion returns the maplibre-native-ffi C ABI contract version.
+// ABIVersion returns the maplibre-native C API contract version.
 //
-// Returns 0 while the ABI is unstable. Stable ABI editions use YYYYMM.
+// Returns 0 while the API is unstable. Stable editions use YYYYMM.
 func ABIVersion() uint32 {
-	return uint32(C.mln_abi_version())
+	return uint32(C.mln_c_version())
 }
 
 // statusError reads the current thread's diagnostic message and builds a Go

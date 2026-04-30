@@ -4,7 +4,7 @@ Go bindings for the [maplibre-native-ffi](https://github.com/sargunv/maplibre-na
 
 **Status: experimental.** The upstream ABI is unstable (`mln_abi_version() == 0`) and these bindings track it directly. Pin to a specific upstream commit and expect breaking changes between bumps.
 
-**Tested against maplibre-native-ffi commit** [`c314267`](https://github.com/sargunv/maplibre-native-ffi/commit/c314267438d9d3d835489f2360352be16c8c94c4). CI builds against this exact commit; bumping it is intentional.
+**Tested against maplibre-native-ffi commit** [`a323b15`](https://github.com/sargunv/maplibre-native-ffi/commit/a323b15c130c39dd6f1c53b76a91587a3e0bca54). CI builds against this exact commit; bumping it is intentional.
 
 ## What works today
 
@@ -28,16 +28,16 @@ Go bindings for the [maplibre-native-ffi](https://github.com/sargunv/maplibre-na
 ## Requirements
 
 - Go 1.23+
-- A built `libmaplibre_native_abi` from [maplibre-native-ffi](https://github.com/sargunv/maplibre-native-ffi). The library lives at `$MLN_FFI_DIR/build/libmaplibre_native_abi.dylib` (macOS) or `.so` (Linux). Build it with `cd $MLN_FFI_DIR && mise run build` (the upstream tooling expects `mise` + `pixi`).
+- A built `libmaplibre-native-c` from [maplibre-native-ffi](https://github.com/sargunv/maplibre-native-ffi). The library lives at `$MLN_FFI_DIR/build/libmaplibre-native-c.dylib` (macOS) or `.so` (Linux), with a pkg-config file at `$MLN_FFI_DIR/build/pkgconfig/maplibre-native-c.pc`. Build it with `cd $MLN_FFI_DIR && mise run build` (the upstream tooling expects `mise` + `pixi`).
 - macOS 13+ with the Metal framework available, **or** Linux with Vulkan (`apt-get install libvulkan-dev mesa-vulkan-drivers vulkan-tools` for a CPU-only Mesa lavapipe deploy).
 - (For `examples/sdl3-metal` only) SDL3 from Homebrew: `brew install sdl3`.
 
 ## Build
 
-The Makefile sets `CGO_CFLAGS` and `CGO_LDFLAGS` from `MLN_FFI_DIR`. Default is `$HOME/dev/maplibre-native-ffi`:
+The Makefile points pkg-config at `$MLN_FFI_DIR/build/pkgconfig` and adds an rpath via `CGO_LDFLAGS`. Default `MLN_FFI_DIR` is `$HOME/dev/maplibre-native-ffi`:
 
 ```bash
-# Build the native dylib (one-time per upstream commit)
+# Build the native library (one-time per upstream commit)
 make native
 
 # Build everything else
@@ -53,12 +53,14 @@ To use a different checkout:
 MLN_FFI_DIR=/path/to/maplibre-native-ffi make build
 ```
 
-To `go run` / `go test` outside the Makefile, source the cgo flags first:
+To `go run` / `go test` outside the Makefile, source the env first:
 
 ```bash
 eval "$(make env)"
 go test ./...
 ```
+
+You may see one `ld: warning: duplicate -rpath ... ignored` during the link. It's harmless — Go's cgo applies `CGO_LDFLAGS` at both the package and binary link phases.
 
 ### Real-asset smoke test
 
@@ -71,8 +73,6 @@ MLN_TEST_STYLE="file:///abs/path/to/style.prepared.json" \
 ```
 
 Optional env: `MLN_TEST_LAT`, `MLN_TEST_LON`, `MLN_TEST_ZOOM`, `MLN_TEST_TIMEOUT`.
-
-You will see a `ld: warning: ignoring duplicate libraries: '-lmaplibre_native_abi'` during the link. This is harmless — it's a known cgo behaviour when env-driven `CGO_LDFLAGS` are propagated through multiple cgo source files. The macOS linker dedupes correctly. Once upstream ships a `pkg-config` `.pc` file the binding will switch to `#cgo pkg-config:` and the warning disappears.
 
 ## Quick start
 

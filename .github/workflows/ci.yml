@@ -6,9 +6,9 @@ on:
   pull_request:
 
 env:
-  # Pinned upstream FFI commit. Bump when intentionally moving to a newer
-  # ABI; the binding tracks this commit's mln_abi_version exactly.
-  MLN_FFI_COMMIT: c314267438d9d3d835489f2360352be16c8c94c4
+  # Pinned upstream commit. Bump when intentionally moving to a newer C API;
+  # the binding tracks this commit exactly.
+  MLN_FFI_COMMIT: a323b15c130c39dd6f1c53b76a91587a3e0bca54
   MLN_FFI_DIR: ${{ github.workspace }}/.maplibre-native-ffi
 
 jobs:
@@ -47,8 +47,8 @@ jobs:
 
       - name: Verify dylib
         run: |
-          ls -la "$MLN_FFI_DIR/build/libmaplibre_native_abi.dylib"
-          file "$MLN_FFI_DIR/build/libmaplibre_native_abi.dylib"
+          ls -la "$MLN_FFI_DIR/build/libmaplibre-native-c.dylib"
+          file "$MLN_FFI_DIR/build/libmaplibre-native-c.dylib"
 
       - name: go vet
         run: |
@@ -105,8 +105,8 @@ jobs:
 
       - name: Verify .so
         run: |
-          ls -la "$MLN_FFI_DIR/build/libmaplibre_native_abi.so"
-          file "$MLN_FFI_DIR/build/libmaplibre_native_abi.so"
+          ls -la "$MLN_FFI_DIR/build/libmaplibre-native-c.so"
+          file "$MLN_FFI_DIR/build/libmaplibre-native-c.so"
 
       - name: go vet
         run: |

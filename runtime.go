@@ -2,7 +2,7 @@ package maplibre
 
 /*
 #include <stdlib.h>
-#include "maplibre_native_abi.h"
+#include "maplibre_native_c.h"
 */
 import "C"
 

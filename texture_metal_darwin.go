@@ -6,7 +6,7 @@ package maplibre
 #cgo darwin LDFLAGS: -framework Metal -framework Foundation
 
 #include <stdint.h>
-#include "maplibre_native_abi.h"
+#include "maplibre_native_c.h"
 
 // MTLCreateSystemDefaultDevice is declared in <Metal/MTLDevice.h> but we keep
 // the prototype here to avoid pulling Objective-C headers into cgo. The
