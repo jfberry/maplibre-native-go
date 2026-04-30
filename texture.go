@@ -5,7 +5,11 @@ package maplibre
 */
 import "C"
 
-import "unsafe"
+import (
+	"fmt"
+	"time"
+	"unsafe"
+)
 
 // TextureFrame is the platform-neutral shape of a frame acquired from a
 // texture session. Backend-specific data lives in the borrowed pointers:
@@ -81,6 +85,67 @@ func (s *TextureSession) Detach() error {
 		}
 	})
 	return err
+}
+
+// RenderStillImage drives the static-render protocol and returns the
+// rendered map as RGBA bytes.
+//
+// The returned buffer is **premultiplied** RGBA (matching mbgl's native
+// PremultipliedImage), tightly packed (stride == width*4), with width and
+// height in physical pixels (logical * scale_factor). A new slice is
+// allocated per call; use RenderStillImageInto for buffer reuse in tight
+// loops.
+//
+// Internally: RenderStill -> readback -> ReleaseFrame. The frame's borrowed
+// GPU handles never escape this call.
+func (m *Map) RenderStillImage(sess *TextureSession, timeout time.Duration) (rgba []byte, width, height, stride int, err error) {
+	frame, _, ferr := m.RenderStill(sess, timeout)
+	if ferr != nil {
+		return nil, 0, 0, 0, ferr
+	}
+	defer sess.ReleaseFrame(frame)
+
+	width = int(frame.Width)
+	height = int(frame.Height)
+	stride = width * 4
+	rgba = make([]byte, stride*height)
+	if rerr := readbackFrame(sess, frame, rgba); rerr != nil {
+		return nil, 0, 0, 0, rerr
+	}
+	return rgba, width, height, stride, nil
+}
+
+// RenderStillImageInto is the buffer-reuse variant of RenderStillImage.
+// dst must have at least width*height*4 bytes; if not, returns an Error
+// with StatusInvalidArgument and dst is untouched. Returns the actual
+// width, height, and stride of the rendered frame.
+//
+// width/height aren't known until the frame is acquired, so a typical
+// caller pre-allocates a buffer sized to its known viewport (matching
+// MapOptions or TextureSession.Resize) and feeds the same slice to every
+// render.
+func (m *Map) RenderStillImageInto(sess *TextureSession, timeout time.Duration, dst []byte) (width, height, stride int, err error) {
+	frame, _, ferr := m.RenderStill(sess, timeout)
+	if ferr != nil {
+		return 0, 0, 0, ferr
+	}
+	defer sess.ReleaseFrame(frame)
+
+	width = int(frame.Width)
+	height = int(frame.Height)
+	stride = width * 4
+	needed := stride * height
+	if len(dst) < needed {
+		return 0, 0, 0, &Error{
+			Status:  StatusInvalidArgument,
+			Op:      "Map.RenderStillImageInto",
+			Message: fmt.Sprintf("dst length %d < needed %d (%dx%d * 4)", len(dst), needed, width, height),
+		}
+	}
+	if rerr := readbackFrame(sess, frame, dst[:needed]); rerr != nil {
+		return 0, 0, 0, rerr
+	}
+	return width, height, stride, nil
 }
 
 // Close destroys the session handle. If still attached, this detaches first.

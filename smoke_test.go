@@ -69,7 +69,7 @@ func TestSmokeRealAssets(t *testing.T) {
 		t.Fatalf("JumpTo: %v", err)
 	}
 
-	sess, err := attachSmokeSession(t, m)
+	sess, err := attachSmokeSession(t, m, 256, 256, 1)
 	if err != nil {
 		var mlnErr *Error
 		if errors.As(err, &mlnErr) && mlnErr.Status == StatusUnsupported {

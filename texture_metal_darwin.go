@@ -6,6 +6,7 @@ package maplibre
 #cgo darwin LDFLAGS: -framework Metal -framework Foundation
 
 #include <stdint.h>
+#include <stddef.h>
 #include "maplibre_native_c.h"
 
 // MTLCreateSystemDefaultDevice is declared in <Metal/MTLDevice.h> but we keep
@@ -14,6 +15,15 @@ package maplibre
 // this PoC we hold the reference for the lifetime of the process; an
 // explicit release path can be added when texture sessions are reattached.
 extern void* MTLCreateSystemDefaultDevice(void);
+
+// Implemented in metal_readback_darwin.m. Blits a borrowed id<MTLTexture>
+// into a transient host-visible MTLBuffer and memcpys to out_rgba. Returns
+// 0 on success; non-zero with err_out populated on failure.
+extern int mln_go_metal_readback(
+    void *device, void *texture,
+    uint8_t *out_rgba, size_t out_capacity,
+    uint32_t width, uint32_t height,
+    char *err_out, size_t err_len);
 */
 import "C"
 
@@ -119,6 +129,48 @@ func (s *TextureSession) AcquireFrame() (TextureFrame, error) {
 		}
 	})
 	return out, err
+}
+
+// readbackFrame copies the GPU contents of a freshly acquired Metal frame
+// into dst as tightly-packed premultiplied RGBA. Caller is responsible for
+// dst having at least width*height*4 capacity.
+func readbackFrame(s *TextureSession, f TextureFrame, dst []byte) error {
+	if f.Texture == nil || f.Device == nil {
+		return &Error{
+			Status:  StatusInvalidArgument,
+			Op:      "readbackFrame",
+			Message: "frame texture or device is nil",
+		}
+	}
+	needed := int(f.Width) * int(f.Height) * 4
+	if len(dst) < needed {
+		return &Error{
+			Status:  StatusInvalidArgument,
+			Op:      "readbackFrame",
+			Message: fmt.Sprintf("dst length %d < needed %d", len(dst), needed),
+		}
+	}
+	var errBuf [256]C.char
+	var rc C.int
+	s.m.rt.d.do(func() {
+		rc = C.mln_go_metal_readback(
+			f.Device,
+			f.Texture,
+			(*C.uint8_t)(unsafe.Pointer(&dst[0])),
+			C.size_t(len(dst)),
+			C.uint32_t(f.Width),
+			C.uint32_t(f.Height),
+			&errBuf[0], C.size_t(len(errBuf)),
+		)
+	})
+	if rc != 0 {
+		return &Error{
+			Status:  StatusNativeError,
+			Op:      "mln_go_metal_readback",
+			Message: C.GoString(&errBuf[0]),
+		}
+	}
+	return nil
 }
 
 // ReleaseFrame returns ownership of a previously acquired frame.

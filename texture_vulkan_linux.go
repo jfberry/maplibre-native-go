@@ -173,6 +173,18 @@ func (s *TextureSession) AcquireFrame() (TextureFrame, error) {
 	return out, err
 }
 
+// readbackFrame for Vulkan is implemented in vulkan_readback_linux.{c,go}.
+// Until that lands the function returns StatusUnsupported so
+// Map.RenderStillImage{,Into} surface a clean error rather than dragging
+// in a stub that pretends to work.
+func readbackFrame(s *TextureSession, f TextureFrame, dst []byte) error {
+	return &Error{
+		Status:  StatusUnsupported,
+		Op:      "readbackFrame",
+		Message: "Vulkan readback not yet implemented (sargunv/maplibre-native-ffi#9)",
+	}
+}
+
 // ReleaseFrame returns ownership of a previously acquired Vulkan frame.
 func (s *TextureSession) ReleaseFrame(f TextureFrame) error {
 	if s == nil || s.ptr == nil {

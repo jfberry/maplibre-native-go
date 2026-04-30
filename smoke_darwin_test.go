@@ -4,6 +4,6 @@ package maplibre
 
 import "testing"
 
-func attachSmokeSession(_ *testing.T, m *Map) (*TextureSession, error) {
-	return m.AttachMetalTexture(256, 256, 1)
+func attachSmokeSession(_ *testing.T, m *Map, w, h uint32, scale float64) (*TextureSession, error) {
+	return m.AttachMetalTexture(w, h, scale)
 }
