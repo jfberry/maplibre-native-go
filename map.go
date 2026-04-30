@@ -8,7 +8,6 @@ import "C"
 
 import (
 	"fmt"
-	"runtime"
 	"time"
 	"unsafe"
 )
@@ -204,18 +203,14 @@ func (m *Map) PollEvent() (Event, bool, error) {
 	return out, has, err
 }
 
-// pollInterval is how long WaitForEvent sleeps between PollEvent attempts
-// when the queue is empty. RenderStill itself does not sleep — see the
-// runtime.Gosched call inside its inner loop.
-//
-// The default 100 µs is a no-op on most Linux kernels (Sleep rounds up to
-// the timer-tick floor, ~1 ms with HZ=250), but matters on macOS / busy
-// containers where finer-grained sleeps are honoured. On stock Linux the
-// effective floor is timer-quantized regardless of this constant. Any
-// further tightening of WaitForEvent's latency floor requires moving off
-// time.Sleep onto the same Gosched path RenderStill uses — left as a
-// follow-up if a real consumer hits a quantization issue with style
-// loading.
+// pollInterval is how long WaitForEvent and RenderStill sleep between
+// PollEvent attempts when the event queue is empty. 100 µs is small
+// enough that the sleep floor isn't measurable in the rampardos bench
+// (running through Linux HZ=250 timer quantization) — empirically the
+// "no events" branch fires rarely once drain-all is in place, so the
+// sleep duration mostly doesn't matter for static rendering. We tested
+// runtime.Gosched here and it bench-matched time.Sleep without buying
+// any visible win, so reverted to the obvious code.
 const pollInterval = 100 * time.Microsecond
 
 // WaitForEvent polls until match returns true, the deadline passes, or an
@@ -367,19 +362,11 @@ func (m *Map) RenderStill(sess *TextureSession, timeout time.Duration) (TextureF
 						done = true
 					}
 				default:
-					// No actionable events this iteration. Yield
-					// cooperatively rather than time.Sleep, which rounds
-					// up to the OS timer-tick floor (~1 ms on stock
-					// Linux HZ=250). Gosched is a near-noop on a
-					// LockOSThread'd dispatcher goroutine — other Go
-					// goroutines run on other OS threads, so there's
-					// nothing to yield to — but it keeps the loop
-					// cooperative without timer involvement. The result
-					// is a hot busy-wait between events bounded only by
-					// the cgo cost of the next run_once (~10-50 µs),
-					// trading per-render CPU during settle for ~10x
-					// lower polling latency.
-					runtime.Gosched()
+					// No actionable events this iteration; back off
+					// briefly. Empirically this branch is cold once
+					// drain-all is in place — most iterations process at
+					// least one event and skip the sleep entirely.
+					time.Sleep(pollInterval)
 				}
 			})
 			if done {
