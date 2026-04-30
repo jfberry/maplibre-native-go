@@ -293,45 +293,79 @@ func (m *Map) RenderStill(sess *TextureSession, timeout time.Duration) (TextureF
 		// inside _MTLCommandBuffer init waiting for slots — exactly the
 		// failure mode the dispatcher's outer pool fix addressed for
 		// single-shot renders.
+		//
+		// Each iteration drains ALL pending events from the C++ queue
+		// before deciding what to do, then issues at most one render per
+		// iteration regardless of how many RENDER_INVALIDATED events were
+		// queued. mbgl's renderer responds to "any new state since last
+		// render" so coalescing N invalidations into one render is correct
+		// and saves redundant GPU work when tile decoders complete in
+		// quick succession.
 		for time.Now().Before(deadline) {
 			var done bool
 			withAutoreleasePool(func() {
 				C.mln_runtime_run_once(m.rt.ptr)
 
-				var cev C.mln_map_event
-				cev.size = C.uint32_t(unsafe.Sizeof(cev))
-				var hasEvent C.bool
-				if s := C.mln_map_poll_event(m.ptr, &cev, &hasEvent); s != C.MLN_STATUS_OK {
-					loopErr = statusError("mln_map_poll_event", s)
+				// Drain pending events. Track the last meaningful event
+				// (RENDER_INVALIDATED or MAP_IDLE) — order matters: a
+				// later IDLE supersedes earlier invalidations (the render
+				// that produced IDLE already addressed them); a later
+				// invalidation supersedes IDLE (post-idle async resource
+				// arrival).
+				var lastSignificant EventType
+				var failureMsg string
+				var failureType EventType
+				var failureCode int32
+
+				const maxDrain = 64
+				for i := 0; i < maxDrain; i++ {
+					var cev C.mln_map_event
+					cev.size = C.uint32_t(unsafe.Sizeof(cev))
+					var hasEvent C.bool
+					if s := C.mln_map_poll_event(m.ptr, &cev, &hasEvent); s != C.MLN_STATUS_OK {
+						loopErr = statusError("mln_map_poll_event", s)
+						done = true
+						return
+					}
+					if !bool(hasEvent) {
+						break
+					}
+					t := EventType(cev._type)
+					switch t {
+					case EventRenderInvalidated, EventMapIdle:
+						lastSignificant = t
+					case EventMapLoadingFailed, EventRenderError:
+						failureType = t
+						failureCode = int32(cev.code)
+						failureMsg = C.GoString(&cev.message[0])
+					}
+				}
+
+				if failureMsg != "" {
+					loopErr = fmt.Errorf("%s: code=%d msg=%q", failureType, failureCode, failureMsg)
 					done = true
 					return
 				}
-				if !bool(hasEvent) {
-					time.Sleep(pollInterval)
-					return
-				}
 
-				switch EventType(cev._type) {
+				switch lastSignificant {
+				case EventMapIdle:
+					settled = true
+					done = true
 				case EventRenderInvalidated:
 					rs := C.mln_texture_render(sess.ptr)
 					switch rs {
 					case C.MLN_STATUS_OK:
 						renders++
 					case C.MLN_STATUS_INVALID_STATE:
-						// "no render update available" — renderer caught
-						// up between the invalidation and this call; keep
-						// polling.
+						// renderer caught up between invalidation and
+						// this call; keep polling.
 					default:
 						loopErr = statusError("mln_texture_render", rs)
 						done = true
 					}
-				case EventMapIdle:
-					settled = true
-					done = true
-				case EventMapLoadingFailed, EventRenderError:
-					msg := C.GoString(&cev.message[0])
-					loopErr = fmt.Errorf("%s: code=%d msg=%q", EventType(cev._type), int32(cev.code), msg)
-					done = true
+				default:
+					// No actionable events this iteration; back off.
+					time.Sleep(pollInterval)
 				}
 			})
 			if done {
