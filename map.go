@@ -170,11 +170,19 @@ type Event struct {
 }
 
 // PollEvent pops the next queued map event, if any.
+//
+// Drives the native runloop (mln_runtime_run_once) once before draining
+// the queue so any pending observer callbacks have already fired. Without
+// this, hot poll loops were rate-limited by the dispatcher's idle tick
+// interval rather than by the poll cadence — tile-arrival events would
+// queue up on C++ worker threads and only get pushed onto the ABI event
+// queue when the dispatcher tick happened to fire between commands.
 func (m *Map) PollEvent() (Event, bool, error) {
 	var out Event
 	var has bool
 	var err error
 	m.rt.d.do(func() {
+		C.mln_runtime_run_once(m.rt.ptr)
 		var cev C.mln_map_event
 		cev.size = C.uint32_t(unsafe.Sizeof(cev))
 		var hasEvent C.bool
@@ -195,6 +203,18 @@ func (m *Map) PollEvent() (Event, bool, error) {
 	return out, has, err
 }
 
+// pollInterval is how long WaitForEvent and RenderStill sleep between
+// PollEvent attempts when the queue is empty. RenderStill drives the
+// static-render protocol by polling for ~16-20 RENDER_INVALIDATED events
+// per render against a tile-stitched style; the per-render latency floor
+// is roughly pollInterval × event_count_to_idle. With a 2 ms quantum the
+// floor sat near 30-40 ms (measured ~33 ms gap vs the Rust binding in
+// the rampardos three-way bench); 100 µs cuts the floor to ~2 ms while
+// still being a good citizen vs hot-spinning. Tunable via the upstream
+// blocking render-still primitive (sargunv/maplibre-native-ffi#9 follow-up)
+// once that lands; until then this is the right default.
+const pollInterval = 100 * time.Microsecond
+
 // WaitForEvent polls until match returns true, the deadline passes, or an
 // error occurs. Returns the matched event on success.
 func (m *Map) WaitForEvent(timeout time.Duration, match func(Event) bool) (Event, error) {
@@ -210,15 +230,8 @@ func (m *Map) WaitForEvent(timeout time.Duration, match func(Event) bool) (Event
 		if time.Now().After(deadline) {
 			return Event{}, fmt.Errorf("timeout after %s waiting for map event", timeout)
 		}
-		time.Sleep(2 * time.Millisecond)
+		time.Sleep(pollInterval)
 	}
-}
-
-// StillRenderer is the texture-session subset that RenderStill needs.
-// Both Metal and Vulkan TextureSession satisfy it.
-type StillRenderer interface {
-	Render() error
-	AcquireFrame() (TextureFrame, error)
 }
 
 // RenderStill drives the static-render protocol against sess: render once,
@@ -232,60 +245,112 @@ type StillRenderer interface {
 // The function does not own the frame lifetime; callers must call
 // sess.ReleaseFrame on the returned frame before the next render or
 // destroy.
-func (m *Map) RenderStill(sess StillRenderer, timeout time.Duration) (TextureFrame, int, error) {
+//
+// Implementation: the inner settle loop (run_once, poll, render) executes
+// inside a single dispatcher.do invocation so each iteration is plain
+// cgo on the runtime owner thread without a Go-side channel round-trip.
+// That reduces total round-trips per render from ~2*event_count to two
+// (the loop, then a final AcquireFrame), which is the dominant latency
+// improvement for tile-stitched static renders. The trick requires a
+// concrete *TextureSession because backend-specific acquire/release
+// can't share an interface across the locked-already dispatcher thread
+// without cyclic dispatch.
+func (m *Map) RenderStill(sess *TextureSession, timeout time.Duration) (TextureFrame, int, error) {
+	if m == nil || m.ptr == nil {
+		return TextureFrame{}, 0, &Error{Status: StatusInvalidArgument, Op: "Map.RenderStill", Message: "map is closed"}
+	}
+	if sess == nil || sess.ptr == nil {
+		return TextureFrame{}, 0, &Error{Status: StatusInvalidArgument, Op: "Map.RenderStill", Message: "session is closed"}
+	}
+
 	deadline := time.Now().Add(timeout)
-	if err := sess.Render(); err != nil {
-		return TextureFrame{}, 0, err
-	}
-	renders := 1
+	var (
+		renders int
+		settled bool
+		loopErr error
+	)
 
-	for time.Now().Before(deadline) {
-		ev, has, err := m.PollEvent()
-		if err != nil {
-			return TextureFrame{}, renders, err
-		}
-		if !has {
-			time.Sleep(2 * time.Millisecond)
-			continue
-		}
-		switch ev.Type {
-		case EventRenderInvalidated:
-			err := sess.Render()
-			if err == nil {
-				renders++
-				continue
+	m.rt.d.do(func() {
+		// Initial render seeds the renderer with what tiles it needs. Run
+		// it in its own nested pool so Metal autoreleased objects (command
+		// buffers, etc) drain before the loop starts.
+		var startupErr error
+		withAutoreleasePool(func() {
+			if status := C.mln_texture_render(sess.ptr); status != C.MLN_STATUS_OK {
+				startupErr = statusError("mln_texture_render", status)
 			}
-			var mlnErr *Error
-			if asMLN(err, &mlnErr) && mlnErr.Status == StatusInvalidState {
-				continue
-			}
-			return TextureFrame{}, renders, err
-		case EventMapIdle:
-			frame, err := sess.AcquireFrame()
-			if err != nil {
-				return TextureFrame{}, renders, err
-			}
-			return frame, renders, nil
-		case EventMapLoadingFailed, EventRenderError:
-			return TextureFrame{}, renders, fmt.Errorf("%s: code=%d msg=%q", ev.Type, ev.Code, ev.Message)
+		})
+		if startupErr != nil {
+			loopErr = startupErr
+			return
 		}
-	}
-	return TextureFrame{}, renders, fmt.Errorf("RenderStill: timeout after %s without MAP_IDLE (renders=%d)", timeout, renders)
-}
+		renders = 1
 
-// asMLN is errors.As specialised to *Error to avoid importing errors here.
-func asMLN(err error, target **Error) bool {
-	for err != nil {
-		if e, ok := err.(*Error); ok {
-			*target = e
-			return true
+		// Each iteration must drain its own autorelease pool. Without a
+		// nested pool the loop accumulates Metal command-buffer references
+		// across all ~16-20 renders that a tile-stitched still typically
+		// needs to settle, and the Metal command-buffer pool deadlocks
+		// inside _MTLCommandBuffer init waiting for slots — exactly the
+		// failure mode the dispatcher's outer pool fix addressed for
+		// single-shot renders.
+		for time.Now().Before(deadline) {
+			var done bool
+			withAutoreleasePool(func() {
+				C.mln_runtime_run_once(m.rt.ptr)
+
+				var cev C.mln_map_event
+				cev.size = C.uint32_t(unsafe.Sizeof(cev))
+				var hasEvent C.bool
+				if s := C.mln_map_poll_event(m.ptr, &cev, &hasEvent); s != C.MLN_STATUS_OK {
+					loopErr = statusError("mln_map_poll_event", s)
+					done = true
+					return
+				}
+				if !bool(hasEvent) {
+					time.Sleep(pollInterval)
+					return
+				}
+
+				switch EventType(cev._type) {
+				case EventRenderInvalidated:
+					rs := C.mln_texture_render(sess.ptr)
+					switch rs {
+					case C.MLN_STATUS_OK:
+						renders++
+					case C.MLN_STATUS_INVALID_STATE:
+						// "no render update available" — renderer caught
+						// up between the invalidation and this call; keep
+						// polling.
+					default:
+						loopErr = statusError("mln_texture_render", rs)
+						done = true
+					}
+				case EventMapIdle:
+					settled = true
+					done = true
+				case EventMapLoadingFailed, EventRenderError:
+					msg := C.GoString(&cev.message[0])
+					loopErr = fmt.Errorf("%s: code=%d msg=%q", EventType(cev._type), int32(cev.code), msg)
+					done = true
+				}
+			})
+			if done {
+				return
+			}
 		}
-		type unwrapper interface{ Unwrap() error }
-		u, ok := err.(unwrapper)
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
+	})
+
+	if loopErr != nil {
+		return TextureFrame{}, renders, loopErr
 	}
-	return false
+	if !settled {
+		return TextureFrame{}, renders, fmt.Errorf("RenderStill: timeout after %s without MAP_IDLE (renders=%d)", timeout, renders)
+	}
+
+	// Single dispatcher round-trip for the backend-specific acquire.
+	frame, err := sess.AcquireFrame()
+	if err != nil {
+		return TextureFrame{}, renders, err
+	}
+	return frame, renders, nil
 }
