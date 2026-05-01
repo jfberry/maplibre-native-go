@@ -10,7 +10,6 @@ import (
 	"context"
 	"fmt"
 	"runtime/cgo"
-	"sync"
 	"time"
 	"unsafe"
 )
@@ -30,12 +29,10 @@ type Runtime struct {
 	d   *dispatcher
 	ptr *C.mln_runtime
 	// maps tracks live Maps under this Runtime, keyed by their C handle, so
-	// PollEvent can resolve event.source back to the Go *Map. Mutation only
-	// happens inside the dispatcher (NewMap, Map.Close), so plain map +
-	// dispatcher serialization is safe; sync.Map would also work but is
-	// overkill for owner-thread-mutated state.
-	mapsMu sync.RWMutex
-	maps   map[uintptr]*Map
+	// PollEvent can resolve event.source back to the Go *Map. All access
+	// (read in PollEvent, mutation in NewMap / Map.Close) happens on the
+	// dispatcher thread, so no lock is needed.
+	maps map[uintptr]*Map
 	// transformHandle holds the cgo.Handle for a registered URL
 	// transform callback so the Go closure stays alive across the
 	// cgo boundary. Mutated only inside the dispatcher.
@@ -195,9 +192,7 @@ func (r *Runtime) PollEvent() (Event, bool, error) {
 			out.Message = C.GoStringN((*C.char)(unsafe.Pointer(cev.message)), C.int(cev.message_size))
 		}
 		if cev.source_type == C.MLN_RUNTIME_EVENT_SOURCE_MAP && cev.source != nil {
-			r.mapsMu.RLock()
 			out.Source = r.maps[uintptr(cev.source)]
-			r.mapsMu.RUnlock()
 		}
 		// Decode the borrowed payload before the next poll
 		// invalidates it. decodePayload copies all variable-length
@@ -220,6 +215,8 @@ func (r *Runtime) PollEvent() (Event, bool, error) {
 //
 // Both predicates work.
 func (r *Runtime) WaitForEvent(ctx context.Context, match func(Event) bool) (Event, error) {
+	timer := time.NewTimer(pollInterval)
+	defer timer.Stop()
 	for {
 		ev, has, err := r.PollEvent()
 		if err != nil {
@@ -228,10 +225,17 @@ func (r *Runtime) WaitForEvent(ctx context.Context, match func(Event) bool) (Eve
 		if has && match(ev) {
 			return ev, nil
 		}
+		// Reset the timer for the next poll. Per docs, drain the
+		// channel first if Stop returns false (a fire is already
+		// queued); the previous iteration consumed the value below
+		// so on the first iteration we are coming from NewTimer
+		// (running) and on subsequent iterations the channel has
+		// been drained.
 		select {
 		case <-ctx.Done():
 			return Event{}, fmt.Errorf("%w: %w", ErrTimeout, ctx.Err())
-		case <-time.After(pollInterval):
+		case <-timer.C:
+			timer.Reset(pollInterval)
 		}
 	}
 }
@@ -239,14 +243,10 @@ func (r *Runtime) WaitForEvent(ctx context.Context, match func(Event) bool) (Eve
 // registerMap is called by NewMap on the dispatcher thread to record a
 // new Map handle for source-resolution in PollEvent.
 func (r *Runtime) registerMap(m *Map) {
-	r.mapsMu.Lock()
 	r.maps[uintptr(unsafe.Pointer(m.ptr))] = m
-	r.mapsMu.Unlock()
 }
 
 // unregisterMap is called by Map.Close on the dispatcher thread.
 func (r *Runtime) unregisterMap(cptr uintptr) {
-	r.mapsMu.Lock()
 	delete(r.maps, cptr)
-	r.mapsMu.Unlock()
 }

@@ -234,6 +234,8 @@ func (m *Map) RenderStill(ctx context.Context, sess *TextureSession) (TextureFra
 		return TextureFrame{}, err
 	}
 
+	timer := time.NewTimer(pollInterval)
+	defer timer.Stop()
 	for {
 		ev, has, err := m.rt.PollEvent()
 		if err != nil {
@@ -243,7 +245,8 @@ func (m *Map) RenderStill(ctx context.Context, sess *TextureSession) (TextureFra
 			select {
 			case <-ctx.Done():
 				return TextureFrame{}, fmt.Errorf("%w: %w", ErrTimeout, ctx.Err())
-			case <-time.After(pollInterval):
+			case <-timer.C:
+				timer.Reset(pollInterval)
 				continue
 			}
 		}
