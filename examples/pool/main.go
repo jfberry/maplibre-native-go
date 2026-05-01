@@ -259,7 +259,7 @@ func savePNGs(dir, prefix string, results []renderResult) {
 			continue
 		}
 		img := image.NewNRGBA(image.Rect(0, 0, r.width, r.height))
-		unpremultiply(img.Pix, r.rgba)
+		maplibre.UnpremultiplyRGBA(img.Pix, r.rgba)
 		path := filepath.Join(dir, fmt.Sprintf("%s-%03d-w%d.png", prefix, r.id, r.worker))
 		f, err := os.Create(path)
 		if err != nil {
@@ -274,17 +274,3 @@ func savePNGs(dir, prefix string, results []renderResult) {
 	log.Printf("[%s] PNGs written to %s", prefix, dir)
 }
 
-// unpremultiply converts premultiplied RGBA to non-premultiplied.
-func unpremultiply(dst, src []byte) {
-	for i := 0; i < len(src); i += 4 {
-		r, g, b, a := src[i], src[i+1], src[i+2], src[i+3]
-		if a == 0 || a == 255 {
-			dst[i+0], dst[i+1], dst[i+2], dst[i+3] = r, g, b, a
-			continue
-		}
-		dst[i+0] = byte((uint32(r)*255 + uint32(a)/2) / uint32(a))
-		dst[i+1] = byte((uint32(g)*255 + uint32(a)/2) / uint32(a))
-		dst[i+2] = byte((uint32(b)*255 + uint32(a)/2) / uint32(a))
-		dst[i+3] = a
-	}
-}

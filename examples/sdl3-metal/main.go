@@ -45,7 +45,6 @@ import (
 	"fmt"
 	"log"
 	"runtime"
-	"strings"
 	"time"
 	"unsafe"
 
@@ -131,9 +130,7 @@ func main() {
 	}
 	loadCtx, loadCancel := context.WithTimeout(context.Background(), *loadTimeout)
 	defer loadCancel()
-	if _, err := m.WaitForEvent(loadCtx, func(e maplibre.Event) bool {
-		return e.Type == maplibre.EventStyleLoaded || e.Type == maplibre.EventMapLoadingFailed
-	}); err != nil {
+	if _, err := m.WaitForEvent(loadCtx, maplibre.EventOfTypes(maplibre.EventStyleLoaded, maplibre.EventMapLoadingFailed)); err != nil {
 		log.Fatalf("waiting for STYLE_LOADED: %v", err)
 	}
 	log.Printf("style loaded")
@@ -182,14 +179,8 @@ func main() {
 }
 
 func loadStyle(m *maplibre.Map, style string) error {
-	switch {
-	case style == "":
+	if style == "" {
 		return m.SetStyleJSON(`{"version":8,"sources":{},"layers":[]}`)
-	case strings.HasPrefix(style, "{"):
-		return m.SetStyleJSON(style)
-	case strings.Contains(style, "://"):
-		return m.SetStyleURL(style)
-	default:
-		return m.SetStyleURL("file://" + style)
 	}
+	return m.LoadStyle(style)
 }

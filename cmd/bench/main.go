@@ -61,14 +61,12 @@ func main() {
 	}
 	defer m.Close()
 
-	if err := loadStyle(m, *style); err != nil {
+	if err := m.LoadStyle(*style); err != nil {
 		log.Fatalf("load style: %v", err)
 	}
 	loadCtx, loadCancel := context.WithTimeout(context.Background(), *loadTimeout)
 	defer loadCancel()
-	if _, err := m.WaitForEvent(loadCtx, func(e maplibre.Event) bool {
-		return e.Type == maplibre.EventStyleLoaded || e.Type == maplibre.EventMapLoadingFailed
-	}); err != nil {
+	if _, err := m.WaitForEvent(loadCtx, maplibre.EventOfTypes(maplibre.EventStyleLoaded, maplibre.EventMapLoadingFailed)); err != nil {
 		log.Fatalf("waiting for STYLE_LOADED: %v", err)
 	}
 	log.Printf("style loaded")
@@ -208,13 +206,3 @@ func maxInt(a, b int) int {
 	return b
 }
 
-func loadStyle(m *maplibre.Map, style string) error {
-	switch {
-	case strings.HasPrefix(style, "{"):
-		return m.SetStyleJSON(style)
-	case strings.Contains(style, "://"):
-		return m.SetStyleURL(style)
-	default:
-		return m.SetStyleURL("file://" + style)
-	}
-}

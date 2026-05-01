@@ -27,7 +27,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"strings"
 	"time"
 
 	maplibre "github.com/jfberry/maplibre-native-go"
@@ -152,14 +151,12 @@ func run(stylePath, styleID string, ratio uint32, loadTimeout, frameTimeout time
 	}
 	defer m.Close()
 
-	if err := loadStyle(m, stylePath); err != nil {
+	if err := m.LoadStyle(stylePath); err != nil {
 		return fmt.Errorf("loading style: %w", err)
 	}
 	loadCtx, loadCancel := context.WithTimeout(context.Background(), loadTimeout)
 	defer loadCancel()
-	if _, err := m.WaitForEvent(loadCtx, func(e maplibre.Event) bool {
-		return e.Type == maplibre.EventStyleLoaded || e.Type == maplibre.EventMapLoadingFailed
-	}); err != nil {
+	if _, err := m.WaitForEvent(loadCtx, maplibre.EventOfTypes(maplibre.EventStyleLoaded, maplibre.EventMapLoadingFailed)); err != nil {
 		return fmt.Errorf("waiting for STYLE_LOADED: %w", err)
 	}
 
@@ -271,13 +268,3 @@ func (w *worker) handle(payload []byte) ([]byte, error) {
 	return out, nil
 }
 
-func loadStyle(m *maplibre.Map, style string) error {
-	switch {
-	case strings.HasPrefix(style, "{"):
-		return m.SetStyleJSON(style)
-	case strings.Contains(style, "://"):
-		return m.SetStyleURL(style)
-	default:
-		return m.SetStyleURL("file://" + style)
-	}
-}

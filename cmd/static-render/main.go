@@ -18,7 +18,6 @@ import (
 	"image/png"
 	"log"
 	"os"
-	"strings"
 	"time"
 
 	maplibre "github.com/jfberry/maplibre-native-go"
@@ -57,14 +56,12 @@ func main() {
 	}
 	defer m.Close()
 
-	if err := loadStyle(m, *style); err != nil {
+	if err := m.LoadStyle(*style); err != nil {
 		log.Fatalf("load style: %v", err)
 	}
 	loadCtx, loadCancel := context.WithTimeout(context.Background(), *loadTimeout)
 	defer loadCancel()
-	if _, err := m.WaitForEvent(loadCtx, func(e maplibre.Event) bool {
-		return e.Type == maplibre.EventStyleLoaded || e.Type == maplibre.EventMapLoadingFailed
-	}); err != nil {
+	if _, err := m.WaitForEvent(loadCtx, maplibre.EventOfTypes(maplibre.EventStyleLoaded, maplibre.EventMapLoadingFailed)); err != nil {
 		log.Fatalf("waiting for STYLE_LOADED: %v", err)
 	}
 
@@ -96,7 +93,7 @@ func main() {
 	// maplibre returns premultiplied RGBA; PNG consumers usually want
 	// non-premultiplied. Unpremultiply in place into an NRGBA image.
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
-	unpremultiply(img.Pix, rgba)
+	maplibre.UnpremultiplyRGBA(img.Pix, rgba)
 
 	f, err := os.Create(*output)
 	if err != nil {
@@ -109,34 +106,3 @@ func main() {
 	log.Printf("wrote %s (%dx%d)", *output, w, h)
 }
 
-// unpremultiply converts premultiplied RGBA bytes to non-premultiplied,
-// writing into dst (which must be the same length as src). Pixels with
-// alpha 0 or 255 short-circuit since the math is identity.
-func unpremultiply(dst, src []byte) {
-	for i := 0; i < len(src); i += 4 {
-		r, g, b, a := src[i], src[i+1], src[i+2], src[i+3]
-		if a == 0 || a == 255 {
-			dst[i+0] = r
-			dst[i+1] = g
-			dst[i+2] = b
-			dst[i+3] = a
-			continue
-		}
-		// c' = c * 255 / a, rounded.
-		dst[i+0] = byte((uint32(r)*255 + uint32(a)/2) / uint32(a))
-		dst[i+1] = byte((uint32(g)*255 + uint32(a)/2) / uint32(a))
-		dst[i+2] = byte((uint32(b)*255 + uint32(a)/2) / uint32(a))
-		dst[i+3] = a
-	}
-}
-
-func loadStyle(m *maplibre.Map, style string) error {
-	switch {
-	case strings.HasPrefix(style, "{"):
-		return m.SetStyleJSON(style)
-	case strings.Contains(style, "://"):
-		return m.SetStyleURL(style)
-	default:
-		return m.SetStyleURL("file://" + style)
-	}
-}

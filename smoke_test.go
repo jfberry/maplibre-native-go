@@ -52,7 +52,7 @@ func TestSmokeRealAssets(t *testing.T) {
 	}
 	defer m.Close()
 
-	if err := loadStyle(m, style); err != nil {
+	if err := m.LoadStyle(style); err != nil {
 		t.Fatalf("load style: %v", err)
 	}
 	loadCtx, loadCancel := context.WithTimeout(context.Background(), timeout)
@@ -100,25 +100,6 @@ func TestSmokeRealAssets(t *testing.T) {
 	t.Logf("smoke OK: frame %dx%d gen=%d", frame.Width, frame.Height, frame.Generation)
 }
 
-func loadStyle(m *Map, style string) error {
-	switch {
-	case len(style) > 0 && style[0] == '{':
-		return m.SetStyleJSON(style)
-	case containsScheme(style):
-		return m.SetStyleURL(style)
-	default:
-		return m.SetStyleURL("file://" + style)
-	}
-}
-
-func containsScheme(s string) bool {
-	for i := 0; i+2 < len(s); i++ {
-		if s[i] == ':' && s[i+1] == '/' && s[i+2] == '/' {
-			return true
-		}
-	}
-	return false
-}
 
 func envFloat(t *testing.T, key string, def float64) float64 {
 	t.Helper()

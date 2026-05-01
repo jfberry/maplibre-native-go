@@ -35,6 +35,31 @@ type ScreenPoint struct {
 	Y float64
 }
 
+// toC fills a C.mln_camera_options from cam.Fields and the typed
+// fields. The caller passes a value initialised with
+// mln_camera_options_default() so size is set correctly.
+func (cam Camera) toC() C.mln_camera_options {
+	ccam := C.mln_camera_options_default()
+	ccam.fields = C.uint32_t(cam.Fields)
+	ccam.latitude = C.double(cam.Latitude)
+	ccam.longitude = C.double(cam.Longitude)
+	ccam.zoom = C.double(cam.Zoom)
+	ccam.bearing = C.double(cam.Bearing)
+	ccam.pitch = C.double(cam.Pitch)
+	return ccam
+}
+
+func cameraFromC(ccam C.mln_camera_options) Camera {
+	return Camera{
+		Fields:    CameraField(ccam.fields),
+		Latitude:  float64(ccam.latitude),
+		Longitude: float64(ccam.longitude),
+		Zoom:      float64(ccam.zoom),
+		Bearing:   float64(ccam.bearing),
+		Pitch:     float64(ccam.pitch),
+	}
+}
+
 // GetCamera returns the current camera snapshot.
 func (m *Map) GetCamera() (Camera, error) {
 	if m == nil {
@@ -49,14 +74,7 @@ func (m *Map) GetCamera() (Camera, error) {
 		if status := C.mln_map_get_camera(m.ptr, &ccam); status != C.MLN_STATUS_OK {
 			return statusError("mln_map_get_camera", status)
 		}
-		out = Camera{
-			Fields:    CameraField(ccam.fields),
-			Latitude:  float64(ccam.latitude),
-			Longitude: float64(ccam.longitude),
-			Zoom:      float64(ccam.zoom),
-			Bearing:   float64(ccam.bearing),
-			Pitch:     float64(ccam.pitch),
-		}
+		out = cameraFromC(ccam)
 		return nil
 	})
 	return out, err
@@ -72,13 +90,7 @@ func (m *Map) JumpTo(cam Camera) error {
 		if m.ptr == nil {
 			return errClosed("Map.JumpTo", "map")
 		}
-		ccam := C.mln_camera_options_default()
-		ccam.fields = C.uint32_t(cam.Fields)
-		ccam.latitude = C.double(cam.Latitude)
-		ccam.longitude = C.double(cam.Longitude)
-		ccam.zoom = C.double(cam.Zoom)
-		ccam.bearing = C.double(cam.Bearing)
-		ccam.pitch = C.double(cam.Pitch)
+		ccam := cam.toC()
 		if status := C.mln_map_jump_to(m.ptr, &ccam); status != C.MLN_STATUS_OK {
 			return statusError("mln_map_jump_to", status)
 		}

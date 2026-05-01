@@ -15,7 +15,6 @@ import (
 	"context"
 	"flag"
 	"log"
-	"strings"
 	"time"
 
 	maplibre "github.com/jfberry/maplibre-native-go"
@@ -124,14 +123,8 @@ func main() {
 
 // loadStyle accepts a URL, a filesystem path, an inline JSON document, or "".
 func loadStyle(m *maplibre.Map, style string) error {
-	switch {
-	case style == "":
+	if style == "" {
 		return m.SetStyleJSON(`{"version":8,"sources":{},"layers":[]}`)
-	case strings.HasPrefix(style, "{"):
-		return m.SetStyleJSON(style)
-	case strings.Contains(style, "://"):
-		return m.SetStyleURL(style)
-	default:
-		return m.SetStyleURL("file://" + style)
 	}
+	return m.LoadStyle(style)
 }

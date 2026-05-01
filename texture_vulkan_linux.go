@@ -106,12 +106,8 @@ func (m *Map) AttachVulkanTextureWithContext(ctx VulkanContext, width, height ui
 			Message: "all four Vulkan handles must be non-nil",
 		}
 	}
-	if width == 0 || height == 0 || scaleFactor <= 0 {
-		return nil, &Error{
-			Status:  StatusInvalidArgument,
-			Op:      "Map.AttachVulkanTextureWithContext",
-			Message: fmt.Sprintf("invalid dimensions: %dx%d @%v", width, height, scaleFactor),
-		}
+	if err := validateAttachDims("Map.AttachVulkanTextureWithContext", width, height, scaleFactor); err != nil {
+		return nil, err
 	}
 
 	s := &TextureSession{m: m}

@@ -114,3 +114,14 @@ func EventOfTypes(ts ...EventType) func(Event) bool {
 		return false
 	}
 }
+
+// eventErr builds a NativeError from a failure-side event (e.g.
+// STILL_IMAGE_FAILED, MAP_LOADING_FAILED, RENDER_ERROR), folding in
+// the event type name, code, and message.
+func eventErr(op string, ev Event) error {
+	return &Error{
+		Status:  StatusNativeError,
+		Op:      op,
+		Message: fmt.Sprintf("%s code=%d %s", ev.Type, ev.Code, ev.Message),
+	}
+}

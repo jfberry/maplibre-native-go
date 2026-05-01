@@ -66,12 +66,8 @@ func (m *Map) AttachMetalTextureWithDevice(device unsafe.Pointer, width, height 
 			Message: "device must not be nil",
 		}
 	}
-	if width == 0 || height == 0 || scaleFactor <= 0 {
-		return nil, &Error{
-			Status:  StatusInvalidArgument,
-			Op:      "Map.AttachMetalTextureWithDevice",
-			Message: fmt.Sprintf("invalid dimensions: %dx%d @%v", width, height, scaleFactor),
-		}
+	if err := validateAttachDims("Map.AttachMetalTextureWithDevice", width, height, scaleFactor); err != nil {
+		return nil, err
 	}
 
 	s := &TextureSession{m: m}

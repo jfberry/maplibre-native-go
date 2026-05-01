@@ -11,6 +11,20 @@ import (
 	"unsafe"
 )
 
+// validateAttachDims is the shared dimension/scale guard for the
+// platform attach paths. Centralised so error messages stay
+// identical across backends.
+func validateAttachDims(op string, width, height uint32, scaleFactor float64) error {
+	if width == 0 || height == 0 || scaleFactor <= 0 {
+		return &Error{
+			Status:  StatusInvalidArgument,
+			Op:      op,
+			Message: fmt.Sprintf("invalid dimensions: %dx%d @%v", width, height, scaleFactor),
+		}
+	}
+	return nil
+}
+
 // TextureFrame is the platform-neutral shape of a frame acquired from a
 // texture session. Backend-specific data lives in the borrowed pointers:
 // for Metal, Texture is id<MTLTexture> and Device is id<MTLDevice>; for
@@ -158,6 +172,28 @@ func (m *Map) RenderImageInto(ctx context.Context, sess *TextureSession, dst []b
 		return 0, 0, rerr
 	}
 	return width, height, nil
+}
+
+// UnpremultiplyRGBA converts premultiplied RGBA bytes (the format
+// RenderImage / RenderImageInto returns) to non-premultiplied RGBA in
+// place into dst. dst and src must be the same length and a multiple
+// of 4. Pixels with alpha 0 or 255 short-circuit since the math is
+// the identity. dst may alias src for in-place conversion.
+//
+// Most PNG/JPEG encoders expect non-premultiplied RGBA; call this
+// before handing pixels to image.NewNRGBA + png.Encode and friends.
+func UnpremultiplyRGBA(dst, src []byte) {
+	for i := 0; i < len(src); i += 4 {
+		r, g, b, a := src[i], src[i+1], src[i+2], src[i+3]
+		if a == 0 || a == 255 {
+			dst[i+0], dst[i+1], dst[i+2], dst[i+3] = r, g, b, a
+			continue
+		}
+		dst[i+0] = byte((uint32(r)*255 + uint32(a)/2) / uint32(a))
+		dst[i+1] = byte((uint32(g)*255 + uint32(a)/2) / uint32(a))
+		dst[i+2] = byte((uint32(b)*255 + uint32(a)/2) / uint32(a))
+		dst[i+3] = a
+	}
 }
 
 // Close destroys the session handle. If still attached, this detaches first.

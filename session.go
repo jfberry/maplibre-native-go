@@ -3,7 +3,6 @@ package maplibre
 import (
 	"context"
 	"fmt"
-	"strings"
 )
 
 // SessionOptions configures NewSession.
@@ -227,22 +226,11 @@ func (s *Session) Close() error {
 	return firstErr
 }
 
-// loadStyleAndWait dispatches the right SetStyle* call for style and
-// then blocks on the resulting STYLE_LOADED / MAP_LOADING_FAILED event.
+// loadStyleAndWait routes via Map.LoadStyle and blocks on the
+// resulting STYLE_LOADED / MAP_LOADING_FAILED event.
 func (s *Session) loadStyleAndWait(ctx context.Context, style string) error {
-	switch {
-	case strings.HasPrefix(style, "{"):
-		if err := s.m.SetStyleJSON(style); err != nil {
-			return err
-		}
-	case strings.Contains(style, "://"):
-		if err := s.m.SetStyleURL(style); err != nil {
-			return err
-		}
-	default:
-		if err := s.m.SetStyleURL("file://" + style); err != nil {
-			return err
-		}
+	if err := s.m.LoadStyle(style); err != nil {
+		return err
 	}
 	return s.waitForStyle(ctx)
 }
@@ -255,11 +243,7 @@ func (s *Session) waitForStyle(ctx context.Context) error {
 		return fmt.Errorf("waiting for STYLE_LOADED: %w", err)
 	}
 	if ev.Type == EventMapLoadingFailed {
-		return &Error{
-			Status:  StatusNativeError,
-			Op:      "Session.waitForStyle",
-			Message: fmt.Sprintf("%s code=%d %s", ev.Type, ev.Code, ev.Message),
-		}
+		return eventErr("Session.waitForStyle", ev)
 	}
 	return nil
 }

@@ -269,14 +269,7 @@ func (p *Projection) GetCamera() (Camera, error) {
 		if status := C.mln_map_projection_get_camera(p.ptr, &ccam); status != C.MLN_STATUS_OK {
 			return statusError("mln_map_projection_get_camera", status)
 		}
-		out = Camera{
-			Fields:    CameraField(ccam.fields),
-			Latitude:  float64(ccam.latitude),
-			Longitude: float64(ccam.longitude),
-			Zoom:      float64(ccam.zoom),
-			Bearing:   float64(ccam.bearing),
-			Pitch:     float64(ccam.pitch),
-		}
+		out = cameraFromC(ccam)
 		return nil
 	})
 	return out, err
@@ -292,13 +285,7 @@ func (p *Projection) SetCamera(cam Camera) error {
 		if p.ptr == nil {
 			return errClosed("Projection.SetCamera", "projection")
 		}
-		ccam := C.mln_camera_options_default()
-		ccam.fields = C.uint32_t(cam.Fields)
-		ccam.latitude = C.double(cam.Latitude)
-		ccam.longitude = C.double(cam.Longitude)
-		ccam.zoom = C.double(cam.Zoom)
-		ccam.bearing = C.double(cam.Bearing)
-		ccam.pitch = C.double(cam.Pitch)
+		ccam := cam.toC()
 		if status := C.mln_map_projection_set_camera(p.ptr, &ccam); status != C.MLN_STATUS_OK {
 			return statusError("mln_map_projection_set_camera", status)
 		}

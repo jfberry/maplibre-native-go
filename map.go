@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unsafe"
 )
@@ -169,6 +170,26 @@ func (m *Map) SetStyleJSON(json string) error {
 	})
 }
 
+// LoadStyle dispatches style by inspecting its shape and calling the
+// right loader:
+//
+//   - inline JSON ("{..."): SetStyleJSON
+//   - URL with scheme (https://, file://, asset://, mbtiles://, ...): SetStyleURL
+//   - filesystem path (otherwise): SetStyleURL("file://" + style)
+//
+// Does not wait for STYLE_LOADED — pair with WaitForEvent if you
+// need that. Session.SetStyle is the blocking equivalent.
+func (m *Map) LoadStyle(style string) error {
+	switch {
+	case strings.HasPrefix(style, "{"):
+		return m.SetStyleJSON(style)
+	case strings.Contains(style, "://"):
+		return m.SetStyleURL(style)
+	default:
+		return m.SetStyleURL("file://" + style)
+	}
+}
+
 // WaitForEvent waits for a runtime event whose Source is this Map and
 // for which match returns true. Filters out events for other Maps owned
 // by the same Runtime; if you need cross-map events use Runtime.WaitForEvent.
@@ -240,10 +261,8 @@ func (m *Map) RenderStill(ctx context.Context, sess *TextureSession) (TextureFra
 			}
 		case EventStillImageFinished:
 			return sess.AcquireFrame()
-		case EventStillImageFailed:
-			return TextureFrame{}, &Error{Status: StatusNativeError, Op: "Map.RenderStill", Message: fmt.Sprintf("STILL_IMAGE_FAILED code=%d %s", ev.Code, ev.Message)}
-		case EventMapLoadingFailed, EventRenderError:
-			return TextureFrame{}, &Error{Status: StatusNativeError, Op: "Map.RenderStill", Message: fmt.Sprintf("%s code=%d %s", ev.Type, ev.Code, ev.Message)}
+		case EventStillImageFailed, EventMapLoadingFailed, EventRenderError:
+			return TextureFrame{}, eventErr("Map.RenderStill", ev)
 		}
 	}
 }
