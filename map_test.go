@@ -65,8 +65,8 @@ func TestNewMapOnClosedRuntime(t *testing.T) {
 		t.Fatal("expected error from NewMap on closed runtime, got nil")
 	}
 	var mlnErr *Error
-	if !errors.As(err, &mlnErr) || mlnErr.Status != StatusInvalidArgument {
-		t.Fatalf("got %v, want *Error{Status: StatusInvalidArgument}", err)
+	if !errors.As(err, &mlnErr) || mlnErr.Status != StatusInvalidState {
+		t.Fatalf("got %v, want *Error{Status: StatusInvalidState}", err)
 	}
 }
 

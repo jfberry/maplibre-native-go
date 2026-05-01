@@ -124,9 +124,8 @@ type RenderMapPayload struct {
 
 func (*RenderMapPayload) payloadType() EventPayloadType { return PayloadRenderMap }
 
-// StyleImageMissingPayload accompanies EventStyleImageMissing. Use
-// the ID to feed mbgl a sprite via a future image-loader API; for
-// now the field is informational.
+// StyleImageMissingPayload accompanies EventStyleImageMissing. ID is
+// the icon mbgl asked the style for and didn't find.
 type StyleImageMissingPayload struct {
 	ImageID string
 }

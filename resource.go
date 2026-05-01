@@ -52,15 +52,10 @@ func mlnGoResourceTransformTrampoline(userData unsafe.Pointer, kind C.uint32_t, 
 	}
 	rewrite := cb(ResourceKind(kind), goURL)
 	if rewrite == "" || rewrite == goURL {
-		// Empty or identity → no rewrite. Per the C API doc the C side
-		// copies the URL string before the callback returns, so it is
-		// safe to leave out->url pointing at the C allocation we make
-		// below — but for "no rewrite" we don't set it at all.
 		return C.MLN_STATUS_OK
 	}
-	// The C API copies out->url before the callback returns. We allocate
-	// with C.CString and leak — but it doesn't actually leak because
-	// we free it before returning.
+	// The C ABI copies out->url before this callback returns, so the
+	// CString allocation can be freed on the way out.
 	cstr := C.CString(rewrite)
 	defer C.free(unsafe.Pointer(cstr))
 	out.url = cstr

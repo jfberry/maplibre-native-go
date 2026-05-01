@@ -5,6 +5,8 @@ package maplibre
 */
 import "C"
 
+import "fmt"
+
 // NetworkStatus mirrors mln_network_status. Process-global; not
 // scoped to a Runtime.
 type NetworkStatus uint32
@@ -21,7 +23,7 @@ func (s NetworkStatus) String() string {
 	case NetworkStatusOffline:
 		return "OFFLINE"
 	}
-	return "UNKNOWN"
+	return fmt.Sprintf("UNKNOWN(%d)", uint32(s))
 }
 
 // GetNetworkStatus reads MapLibre Native's process-global network

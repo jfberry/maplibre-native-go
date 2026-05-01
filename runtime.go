@@ -101,25 +101,25 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 }
 
 // runOnOwner runs fn on this runtime's owner thread. If the runtime's
-// dispatcher has been closed, returns an *Error tagged with op (Status
-// matches the convention used by errClosed elsewhere in the binding).
-// Otherwise returns whatever fn returns. fn runs serialized with all
-// other ABI calls into this runtime — it is the only place where
-// pointer fields (Runtime.ptr, Map.ptr, TextureSession.ptr) may be
-// safely read or mutated, since no other goroutine touches them.
+// dispatcher has been closed, returns *Error{Status: StatusInvalidState}.
+// fn runs serialized with all other ABI calls into this runtime — it is
+// the only place where pointer fields (Runtime.ptr, Map.ptr,
+// TextureSession.ptr) may be safely read or mutated.
 func (r *Runtime) runOnOwner(op string, fn func() error) error {
 	var fnErr error
 	if dErr := r.d.do(func() {
 		fnErr = fn()
 	}); dErr != nil {
-		return &Error{Status: StatusInvalidArgument, Op: op, Message: "runtime is closed"}
+		return &Error{Status: StatusInvalidState, Op: op, Message: "runtime is closed"}
 	}
 	return fnErr
 }
 
-// errClosed returns the conventional "X is closed" error.
+// errClosed returns the conventional "X is closed" error. Closed
+// resources are state errors, not argument errors — match with
+// errors.Is(err, ErrInvalidState).
 func errClosed(op, what string) error {
-	return &Error{Status: StatusInvalidArgument, Op: op, Message: what + " is closed"}
+	return &Error{Status: StatusInvalidState, Op: op, Message: what + " is closed"}
 }
 
 // Close destroys the runtime handle and stops the dispatcher.

@@ -34,10 +34,9 @@ type SessionOptions struct {
 // across multiple Sessions for parallelism rather than calling one
 // Session from many goroutines.
 type Session struct {
-	rt   *Runtime
-	m    *Map
-	ts   *TextureSession
-	opts MapOptions
+	rt *Runtime
+	m  *Map
+	ts *TextureSession
 }
 
 // NewSession creates a Runtime, a Map, attaches a platform-default
@@ -72,7 +71,7 @@ func NewSession(ctx context.Context, opts SessionOptions) (*Session, error) {
 		return nil, fmt.Errorf("NewSession: NewRuntime: %w", err)
 	}
 	// On any failure after this point, tear down what we built so far.
-	s := &Session{rt: rt, opts: opts.Map}
+	s := &Session{rt: rt}
 	cleanup := func() {
 		if s.ts != nil {
 			_ = s.ts.Close()
@@ -145,6 +144,9 @@ func (s *Session) SetStyleJSON(ctx context.Context, json string) error {
 // SetStyle accepts the same forms as SessionOptions.Style and routes
 // to SetStyleURL / SetStyleJSON.
 func (s *Session) SetStyle(ctx context.Context, style string) error {
+	if s == nil || s.m == nil {
+		return errClosed("Session.SetStyle", "session")
+	}
 	return s.loadStyleAndWait(ctx, style)
 }
 
@@ -157,13 +159,7 @@ func (s *Session) Resize(width, height uint32, scaleFactor float64) error {
 	if scaleFactor <= 0 {
 		scaleFactor = 1
 	}
-	if err := s.ts.Resize(width, height, scaleFactor); err != nil {
-		return err
-	}
-	s.opts.Width = width
-	s.opts.Height = height
-	s.opts.ScaleFactor = scaleFactor
-	return nil
+	return s.ts.Resize(width, height, scaleFactor)
 }
 
 // JumpTo applies the camera and returns when the dispatcher has
@@ -262,7 +258,7 @@ func (s *Session) waitForStyle(ctx context.Context) error {
 		return &Error{
 			Status:  StatusNativeError,
 			Op:      "Session.waitForStyle",
-			Message: fmt.Sprintf("MAP_LOADING_FAILED code=%d %s", ev.Code, ev.Message),
+			Message: fmt.Sprintf("%s code=%d %s", ev.Type, ev.Code, ev.Message),
 		}
 	}
 	return nil

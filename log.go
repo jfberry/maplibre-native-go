@@ -13,6 +13,7 @@ mln_log_callback mlnGoGetLogTrampoline(void);
 import "C"
 
 import (
+	"fmt"
 	"sync"
 	"unsafe"
 )
@@ -35,7 +36,7 @@ func (s LogSeverity) String() string {
 	case LogSeverityError:
 		return "ERROR"
 	}
-	return "UNKNOWN"
+	return fmt.Sprintf("UNKNOWN(%d)", uint32(s))
 }
 
 // LogSeverityMask is a bitmask used by SetLogAsyncSeverityMask to
