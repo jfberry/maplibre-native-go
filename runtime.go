@@ -198,6 +198,10 @@ func (r *Runtime) PollEvent() (Event, bool, error) {
 			out.Source = r.maps[uintptr(cev.source)]
 			r.mapsMu.RUnlock()
 		}
+		// Decode the borrowed payload before the next poll
+		// invalidates it. decodePayload copies all variable-length
+		// data (image_id, source_id) into Go strings.
+		out.Payload = decodePayload(uint32(cev.payload_type), unsafe.Pointer(cev.payload), cev.payload_size)
 		return nil
 	})
 	return out, has, err

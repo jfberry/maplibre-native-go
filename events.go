@@ -81,14 +81,17 @@ func (e EventType) String() string {
 
 // Event is the high-level Go representation of mln_runtime_event. Source
 // identifies the originating Map for map-source events, or is nil for
-// runtime-source events. Detailed payloads (render-frame stats,
-// tile-action details, style-image-missing IDs) are not exposed on this
-// struct in v1; if you need them, file an issue with the use case.
+// runtime-source events. Payload is non-nil for events that carry
+// typed extras: EventRenderFrameFinished -> *RenderFramePayload,
+// EventRenderMapFinished -> *RenderMapPayload, EventStyleImageMissing
+// -> *StyleImageMissingPayload, EventTileAction -> *TileActionPayload.
+// All other event types have Payload == nil.
 type Event struct {
 	Type    EventType
 	Code    int32
 	Source  *Map // nil if event source is the runtime itself
 	Message string
+	Payload Payload
 }
 
 // EventOfType returns a predicate matching events with the given type
