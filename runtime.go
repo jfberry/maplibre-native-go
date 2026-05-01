@@ -9,6 +9,7 @@ import "C"
 import (
 	"context"
 	"fmt"
+	"runtime/cgo"
 	"sync"
 	"time"
 	"unsafe"
@@ -35,6 +36,14 @@ type Runtime struct {
 	// overkill for owner-thread-mutated state.
 	mapsMu sync.RWMutex
 	maps   map[uintptr]*Map
+	// transformHandle holds the cgo.Handle for a registered URL
+	// transform callback so the Go closure stays alive across the
+	// cgo boundary. Mutated only inside the dispatcher.
+	transformHandle cgo.Handle
+	// transformUserData is the C-allocated cell holding the handle's
+	// uintptr value (used as mbgl's user_data). Mutated only inside
+	// the dispatcher; freed in Close.
+	transformUserData unsafe.Pointer
 }
 
 // RuntimeOptions configures NewRuntime. Zero-valued fields are passed as
@@ -133,6 +142,14 @@ func (r *Runtime) Close() error {
 			return
 		}
 		r.ptr = nil
+		if r.transformHandle != 0 {
+			r.transformHandle.Delete()
+			r.transformHandle = 0
+		}
+		if r.transformUserData != nil {
+			C.free(r.transformUserData)
+			r.transformUserData = nil
+		}
 	})
 	if dErr != nil {
 		// Already closed; no-op.
