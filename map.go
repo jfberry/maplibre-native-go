@@ -104,6 +104,7 @@ func (r *Runtime) NewMap(opts MapOptions) (*Map, error) {
 	if err != nil {
 		return nil, err
 	}
+	trackForLeak(m, "Map", func() bool { return m.ptr != nil })
 	return m, nil
 }
 

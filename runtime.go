@@ -96,6 +96,7 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 		rt.d.close()
 		return nil, createErr
 	}
+	trackForLeak(rt, "Runtime", func() bool { return rt.ptr != nil })
 	return rt, nil
 }
 

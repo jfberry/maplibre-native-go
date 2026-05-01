@@ -234,6 +234,7 @@ func (m *Map) NewProjection() (*Projection, error) {
 	if err != nil {
 		return nil, err
 	}
+	trackForLeak(p, "Projection", func() bool { return p.ptr != nil })
 	return p, nil
 }
 

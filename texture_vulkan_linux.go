@@ -143,6 +143,7 @@ func (m *Map) AttachVulkanTextureWithContext(ctx VulkanContext, width, height ui
 	// physical device that aren't carried in TextureFrame.
 	data := &vulkanSessionData{ctx: ctx}
 	s.backend = unsafe.Pointer(data)
+	trackForLeak(s, "TextureSession (Vulkan)", func() bool { return s.ptr != nil })
 	return s, nil
 }
 

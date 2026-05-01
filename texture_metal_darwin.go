@@ -95,6 +95,7 @@ func (m *Map) AttachMetalTextureWithDevice(device unsafe.Pointer, width, height 
 	if err != nil {
 		return nil, err
 	}
+	trackForLeak(s, "TextureSession (Metal)", func() bool { return s.ptr != nil })
 	return s, nil
 }
 

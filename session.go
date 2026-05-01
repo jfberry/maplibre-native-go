@@ -101,6 +101,7 @@ func NewSession(ctx context.Context, opts SessionOptions) (*Session, error) {
 		cleanup()
 		return nil, err
 	}
+	trackForLeak(s, "Session", func() bool { return s.rt != nil || s.m != nil || s.ts != nil })
 	return s, nil
 }
 
