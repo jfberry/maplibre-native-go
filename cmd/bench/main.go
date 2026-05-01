@@ -87,26 +87,26 @@ func main() {
 		})
 	}
 
-	renderOne := func(i int) (renders int, dur time.Duration, err error) {
+	renderOne := func(i int) (dur time.Duration, err error) {
 		if err = jump(i); err != nil {
-			return 0, 0, fmt.Errorf("JumpTo: %w", err)
+			return 0, fmt.Errorf("JumpTo: %w", err)
 		}
 		t0 := time.Now()
-		frame, n, err := m.RenderStill(sess, *frameTimeout)
+		frame, err := m.RenderStill(sess, *frameTimeout)
 		dur = time.Since(t0)
 		if err != nil {
-			return n, dur, err
+			return dur, err
 		}
 		if relErr := sess.ReleaseFrame(frame); relErr != nil {
-			return n, dur, fmt.Errorf("ReleaseFrame: %w", relErr)
+			return dur, fmt.Errorf("ReleaseFrame: %w", relErr)
 		}
-		return n, dur, nil
+		return dur, nil
 	}
 
 	// Warmup: get sprite/glyph/initial-tile churn out of the way.
 	log.Printf("warmup: %d frames", *warmup)
 	for i := 0; i < *warmup; i++ {
-		if _, _, err := renderOne(i); err != nil {
+		if _, err := renderOne(i); err != nil {
 			log.Fatalf("warmup frame %d: %v", i, err)
 		}
 	}
@@ -115,19 +115,17 @@ func main() {
 
 	// Measured run.
 	timings := make([]time.Duration, 0, *frames)
-	totalRenders := 0
 	rssSamples := []int64{rssWarmup}
 
 	start := time.Now()
 	for i := 0; i < *frames; i++ {
-		n, dur, err := renderOne(*warmup + i)
+		dur, err := renderOne(*warmup + i)
 		if err != nil {
 			log.Fatalf("frame %d: %v", i, err)
 		}
 		timings = append(timings, dur)
-		totalRenders += n
 		if *verbose {
-			log.Printf("frame %d: %s (%d renders)", i, dur, n)
+			log.Printf("frame %d: %s", i, dur)
 		}
 		if (i+1)%(maxInt(*frames/10, 1)) == 0 {
 			rssSamples = append(rssSamples, maxRSSKB())
@@ -150,7 +148,6 @@ func main() {
 	log.Printf("frame p90        = %s", p(0.9).Round(time.Microsecond))
 	log.Printf("frame p99        = %s", p(0.99).Round(time.Microsecond))
 	log.Printf("frame max        = %s", timings[len(timings)-1].Round(time.Microsecond))
-	log.Printf("renders/frame    = %.1f", float64(totalRenders)/float64(*frames))
 	log.Printf("max-rss warmup   = %s", fmtKB(rssWarmup))
 	log.Printf("max-rss end      = %s", fmtKB(rssEnd))
 	log.Printf("max-rss delta    = %s", fmtKBDelta(rssEnd-rssWarmup))

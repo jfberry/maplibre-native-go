@@ -35,13 +35,9 @@ func TestVulkanTextureLifecycle(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sess.Close() })
 
-	if err := sess.Render(); err != nil {
-		t.Fatalf("Render: %v", err)
-	}
-
-	frame, err := sess.AcquireFrame()
+	frame, err := m.RenderStill(sess, 5*time.Second)
 	if err != nil {
-		t.Fatalf("AcquireFrame: %v", err)
+		t.Fatalf("RenderStill: %v", err)
 	}
 	if frame.Texture == nil {
 		t.Fatal("acquired frame has nil VkImage")

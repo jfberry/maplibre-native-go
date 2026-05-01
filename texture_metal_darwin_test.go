@@ -4,6 +4,7 @@ package maplibre
 
 import (
 	"testing"
+	"time"
 )
 
 func TestMetalTextureLifecycle(t *testing.T) {
@@ -19,13 +20,9 @@ func TestMetalTextureLifecycle(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sess.Close() })
 
-	if err := sess.Render(); err != nil {
-		t.Fatalf("Render: %v", err)
-	}
-
-	frame, err := sess.AcquireFrame()
+	frame, err := m.RenderStill(sess, 5*time.Second)
 	if err != nil {
-		t.Fatalf("AcquireFrame: %v", err)
+		t.Fatalf("RenderStill: %v", err)
 	}
 	if frame.Texture == nil {
 		t.Fatal("acquired frame has nil texture pointer")
@@ -59,26 +56,27 @@ func TestMetalTextureResizeBetweenRenders(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sess.Close() })
 
-	if err := sess.Render(); err != nil {
-		t.Fatalf("Render 256: %v", err)
+	frame1, err := m.RenderStill(sess, 5*time.Second)
+	if err != nil {
+		t.Fatalf("RenderStill 256: %v", err)
+	}
+	if err := sess.ReleaseFrame(frame1); err != nil {
+		t.Fatalf("ReleaseFrame 256: %v", err)
 	}
 
 	if err := sess.Resize(512, 384, 1.0); err != nil {
 		t.Fatalf("Resize: %v", err)
 	}
-	if err := sess.Render(); err != nil {
-		t.Fatalf("Render 512x384: %v", err)
-	}
 
-	frame, err := sess.AcquireFrame()
+	frame2, err := m.RenderStill(sess, 5*time.Second)
 	if err != nil {
-		t.Fatalf("AcquireFrame: %v", err)
+		t.Fatalf("RenderStill 512x384: %v", err)
 	}
-	if frame.Width != 512 || frame.Height != 384 {
-		t.Fatalf("frame size after resize = %dx%d, want 512x384", frame.Width, frame.Height)
+	if frame2.Width != 512 || frame2.Height != 384 {
+		t.Fatalf("frame size after resize = %dx%d, want 512x384", frame2.Width, frame2.Height)
 	}
-	if err := sess.ReleaseFrame(frame); err != nil {
-		t.Fatalf("ReleaseFrame: %v", err)
+	if err := sess.ReleaseFrame(frame2); err != nil {
+		t.Fatalf("ReleaseFrame 512x384: %v", err)
 	}
 }
 

@@ -99,11 +99,11 @@ func main() {
 	}()
 	log.Printf("metal texture session attached")
 
-	frame, renders, err := m.RenderStill(sess, *timeout)
+	frame, err := m.RenderStill(sess, *timeout)
 	if err != nil {
 		log.Fatalf("RenderStill: %v", err)
 	}
-	log.Printf("settled after %d renders", renders)
+	log.Printf("still rendered")
 	log.Printf("frame: gen=%d id=%d %dx%d @%v fmt=%d texture=%p device=%p",
 		frame.Generation, frame.FrameID, frame.Width, frame.Height,
 		frame.ScaleFactor, frame.PixelFormat, frame.Texture, frame.Device)

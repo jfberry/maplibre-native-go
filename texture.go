@@ -57,16 +57,23 @@ func (s *TextureSession) Resize(width, height uint32, scaleFactor float64) error
 	return err
 }
 
-// Render draws the latest map state into the offscreen texture.
-func (s *TextureSession) Render() error {
+// RenderUpdate processes one render-target update for the session.
+//
+// Continuous-mode only: call after receiving a
+// MLN_RUNTIME_EVENT_MAP_RENDER_UPDATE_AVAILABLE event for this session's
+// map. Returns StatusInvalidState if no frame is currently produced for
+// the update; keep pumping events and try again. Static-mode renders go
+// through Map.RenderStill (which uses request_still_image internally
+// and never touches this path).
+func (s *TextureSession) RenderUpdate() error {
 	if s == nil || s.ptr == nil {
-		return &Error{Status: StatusInvalidArgument, Op: "TextureSession.Render", Message: "session is closed"}
+		return &Error{Status: StatusInvalidArgument, Op: "TextureSession.RenderUpdate", Message: "session is closed"}
 	}
 	var err error
 	s.m.rt.d.do(func() {
-		status := C.mln_texture_render(s.ptr)
+		status := C.mln_texture_render_update(s.ptr)
 		if status != C.MLN_STATUS_OK {
-			err = statusError("mln_texture_render", status)
+			err = statusError("mln_texture_render_update", status)
 		}
 	})
 	return err
@@ -100,7 +107,7 @@ func (s *TextureSession) Detach() error {
 // Internally: RenderStill -> readback -> ReleaseFrame. The frame's borrowed
 // GPU handles never escape this call.
 func (m *Map) RenderStillImage(sess *TextureSession, timeout time.Duration) (rgba []byte, width, height, stride int, err error) {
-	frame, _, ferr := m.RenderStill(sess, timeout)
+	frame, ferr := m.RenderStill(sess, timeout)
 	if ferr != nil {
 		return nil, 0, 0, 0, ferr
 	}
@@ -126,7 +133,7 @@ func (m *Map) RenderStillImage(sess *TextureSession, timeout time.Duration) (rgb
 // MapOptions or TextureSession.Resize) and feeds the same slice to every
 // render.
 func (m *Map) RenderStillImageInto(sess *TextureSession, timeout time.Duration, dst []byte) (width, height, stride int, err error) {
-	frame, _, ferr := m.RenderStill(sess, timeout)
+	frame, ferr := m.RenderStill(sess, timeout)
 	if ferr != nil {
 		return 0, 0, 0, ferr
 	}

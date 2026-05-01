@@ -59,27 +59,27 @@ func TestSetStyleJSONInvalid(t *testing.T) {
 	}
 }
 
-func TestPollEventEmptyQueue(t *testing.T) {
-	m := newTestMap(t)
-	// No style set, no actions -> queue may produce nothing for a while.
-	ev, has, err := m.PollEvent()
+func TestRuntimePollEventEmptyQueue(t *testing.T) {
+	rt := newTestRuntime(t)
+	// On a fresh runtime with no map activity yet, the queue is typically
+	// empty; we just assert the call shape is well-behaved.
+	ev, has, err := rt.PollEvent()
 	if err != nil {
 		t.Fatalf("PollEvent: %v", err)
 	}
-	// Whether the queue has events on a fresh map is implementation-defined;
-	// we just assert the call succeeds and the typed return is consistent.
-	if !has && ev.Type != EventNone {
+	if !has && (ev.Type != 0 || ev.Source != nil || ev.Code != 0 || ev.Message != "") {
 		t.Fatalf("has=false but ev=%+v, expected zero value", ev)
 	}
 }
 
 func TestEventTypeString(t *testing.T) {
 	cases := map[EventType]string{
-		EventStyleLoaded:       "STYLE_LOADED",
-		EventMapLoadingFailed:  "MAP_LOADING_FAILED",
-		EventCameraDidChange:   "CAMERA_DID_CHANGE",
-		EventRenderInvalidated: "RENDER_INVALIDATED",
-		EventType(99):          "UNKNOWN(99)",
+		EventStyleLoaded:           "STYLE_LOADED",
+		EventMapLoadingFailed:      "MAP_LOADING_FAILED",
+		EventCameraDidChange:       "CAMERA_DID_CHANGE",
+		EventStillImageFinished:    "STILL_IMAGE_FINISHED",
+		EventRenderUpdateAvailable: "RENDER_UPDATE_AVAILABLE",
+		EventType(99):              "UNKNOWN(99)",
 	}
 	for ev, want := range cases {
 		if got := ev.String(); got != want {

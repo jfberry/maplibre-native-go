@@ -79,7 +79,7 @@ func TestSmokeRealAssets(t *testing.T) {
 	}
 	defer sess.Close()
 
-	frame, renders, err := m.RenderStill(sess, timeout)
+	frame, err := m.RenderStill(sess, timeout)
 	if err != nil {
 		t.Fatalf("RenderStill: %v", err)
 	}
@@ -92,8 +92,7 @@ func TestSmokeRealAssets(t *testing.T) {
 		t.Fatalf("acquired frame has zero dimensions: %dx%d", frame.Width, frame.Height)
 	}
 
-	t.Logf("smoke OK: %d renders to settle, frame %dx%d gen=%d",
-		renders, frame.Width, frame.Height, frame.Generation)
+	t.Logf("smoke OK: frame %dx%d gen=%d", frame.Width, frame.Height, frame.Generation)
 }
 
 func loadStyle(m *Map, style string) error {

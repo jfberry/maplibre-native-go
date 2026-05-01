@@ -4,17 +4,17 @@ Go bindings for the [maplibre-native-ffi](https://github.com/sargunv/maplibre-na
 
 **Status: experimental.** The upstream ABI is unstable (`mln_abi_version() == 0`) and these bindings track it directly. Pin to a specific upstream commit and expect breaking changes between bumps.
 
-**Tested against maplibre-native-ffi commit** [`a323b15`](https://github.com/sargunv/maplibre-native-ffi/commit/a323b15c130c39dd6f1c53b76a91587a3e0bca54). CI builds against this exact commit; bumping it is intentional.
+**Tested against maplibre-native-ffi commit** [`f1d0008`](https://github.com/sargunv/maplibre-native-ffi/commit/f1d00086e0da85617edc1ce5281b4c5f4e5938e1). CI builds against this exact commit; bumping it is intentional.
 
 ## What works today
 
 - Runtime / Map / TextureSession lifecycle
 - Style URL + inline style JSON
 - Camera ops: `GetCamera`, `JumpTo`, `MoveBy`, `ScaleBy`, `RotateBy`, `PitchBy`, `CancelTransitions`
-- Map event polling (`PollEvent`, `WaitForEvent`)
+- Runtime event polling (`Runtime.PollEvent`, `Runtime.WaitForEvent`, `Map.WaitForEvent` filter wrapper)
 - Metal texture session on macOS — `AttachMetalTexture` / `AttachMetalTextureWithDevice`, resize, render, acquire/release frame, detach, destroy
 - Vulkan texture session on Linux — `AttachVulkanTexture` (default Mesa lavapipe context internally) / `AttachVulkanTextureWithContext` (caller-supplied `VkInstance`/`VkPhysicalDevice`/`VkDevice`/`VkQueue`)
-- `Map.RenderStill` — drives the static-render protocol (initial render → re-render on every `RENDER_INVALIDATED` until `MAP_IDLE`) and returns the acquired frame
+- `Map.RenderStill` — drives a single static-mode render via `mln_map_request_still_image` and returns the acquired frame. Sub-millisecond p50 against tile-cached styles on Apple Silicon Metal.
 - Stress benchmark (`cmd/bench`) demonstrating stable steady-state RSS
 
 ## What's missing
@@ -123,14 +123,14 @@ func main() {
 	}
 	defer sess.Close()
 
-	frame, renders, err := m.RenderStill(sess, 10*time.Second)
+	frame, err := m.RenderStill(sess, 10*time.Second)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer sess.ReleaseFrame(frame)
 
-	log.Printf("settled after %d renders, frame %dx%d at gen=%d, texture=%p",
-		renders, frame.Width, frame.Height, frame.Generation, frame.Texture)
+	log.Printf("frame %dx%d at gen=%d, texture=%p",
+		frame.Width, frame.Height, frame.Generation, frame.Texture)
 }
 ```
 

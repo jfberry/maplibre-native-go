@@ -8,7 +8,7 @@ on:
 env:
   # Pinned upstream commit. Bump when intentionally moving to a newer C API;
   # the binding tracks this commit exactly.
-  MLN_FFI_COMMIT: a323b15c130c39dd6f1c53b76a91587a3e0bca54
+  MLN_FFI_COMMIT: f1d00086e0da85617edc1ce5281b4c5f4e5938e1
   MLN_FFI_DIR: ${{ github.workspace }}/.maplibre-native-ffi
 
 jobs:

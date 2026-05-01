@@ -149,12 +149,11 @@ func main() {
 	}
 	defer sess.Close()
 
-	frame, renders, err := m.RenderStill(sess, *frameTimeout)
+	frame, err := m.RenderStill(sess, *frameTimeout)
 	if err != nil {
 		log.Fatalf("RenderStill: %v", err)
 	}
-	log.Printf("rendered: %d render calls; texture %dx%d gen=%d",
-		renders, frame.Width, frame.Height, frame.Generation)
+	log.Printf("rendered: texture %dx%d gen=%d", frame.Width, frame.Height, frame.Generation)
 	defer sess.ReleaseFrame(frame)
 
 	C.compositor_resize(comp, C.double(frame.Width), C.double(frame.Height))
