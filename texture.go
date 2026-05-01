@@ -44,17 +44,18 @@ type TextureSession struct {
 
 // Resize advances the session's generation and reallocates backing storage.
 func (s *TextureSession) Resize(width, height uint32, scaleFactor float64) error {
-	if s == nil || s.ptr == nil {
-		return &Error{Status: StatusInvalidArgument, Op: "TextureSession.Resize", Message: "session is closed"}
+	if s == nil {
+		return errClosed("TextureSession.Resize", "session")
 	}
-	var err error
-	s.m.rt.d.do(func() {
-		status := C.mln_texture_resize(s.ptr, C.uint32_t(width), C.uint32_t(height), C.double(scaleFactor))
-		if status != C.MLN_STATUS_OK {
-			err = statusError("mln_texture_resize", status)
+	return s.m.rt.runOnOwner("TextureSession.Resize", func() error {
+		if s.ptr == nil {
+			return errClosed("TextureSession.Resize", "session")
 		}
+		if status := C.mln_texture_resize(s.ptr, C.uint32_t(width), C.uint32_t(height), C.double(scaleFactor)); status != C.MLN_STATUS_OK {
+			return statusError("mln_texture_resize", status)
+		}
+		return nil
 	})
-	return err
 }
 
 // RenderUpdate processes one render-target update for the session.
@@ -66,33 +67,35 @@ func (s *TextureSession) Resize(width, height uint32, scaleFactor float64) error
 // through Map.RenderStill (which uses request_still_image internally
 // and never touches this path).
 func (s *TextureSession) RenderUpdate() error {
-	if s == nil || s.ptr == nil {
-		return &Error{Status: StatusInvalidArgument, Op: "TextureSession.RenderUpdate", Message: "session is closed"}
+	if s == nil {
+		return errClosed("TextureSession.RenderUpdate", "session")
 	}
-	var err error
-	s.m.rt.d.do(func() {
-		status := C.mln_texture_render_update(s.ptr)
-		if status != C.MLN_STATUS_OK {
-			err = statusError("mln_texture_render_update", status)
+	return s.m.rt.runOnOwner("TextureSession.RenderUpdate", func() error {
+		if s.ptr == nil {
+			return errClosed("TextureSession.RenderUpdate", "session")
 		}
+		if status := C.mln_texture_render_update(s.ptr); status != C.MLN_STATUS_OK {
+			return statusError("mln_texture_render_update", status)
+		}
+		return nil
 	})
-	return err
 }
 
 // Detach releases backend resources but keeps the session handle live for
 // destroy.
 func (s *TextureSession) Detach() error {
-	if s == nil || s.ptr == nil {
+	if s == nil {
 		return nil
 	}
-	var err error
-	s.m.rt.d.do(func() {
-		status := C.mln_texture_detach(s.ptr)
-		if status != C.MLN_STATUS_OK {
-			err = statusError("mln_texture_detach", status)
+	return s.m.rt.runOnOwner("TextureSession.Detach", func() error {
+		if s.ptr == nil {
+			return nil
 		}
+		if status := C.mln_texture_detach(s.ptr); status != C.MLN_STATUS_OK {
+			return statusError("mln_texture_detach", status)
+		}
+		return nil
 	})
-	return err
 }
 
 // RenderStillImage drives the static-render protocol and returns the
@@ -159,21 +162,21 @@ func (m *Map) RenderStillImageInto(sess *TextureSession, timeout time.Duration, 
 // Close destroys the session handle. If still attached, this detaches first.
 // Idempotent.
 func (s *TextureSession) Close() error {
-	if s == nil || s.ptr == nil {
+	if s == nil {
 		return nil
 	}
-	var err error
-	s.m.rt.d.do(func() {
-		status := C.mln_texture_destroy(s.ptr)
-		if status != C.MLN_STATUS_OK {
-			err = statusError("mln_texture_destroy", status)
-			return
+	return s.m.rt.runOnOwner("TextureSession.Close", func() error {
+		if s.ptr == nil {
+			return nil
+		}
+		if status := C.mln_texture_destroy(s.ptr); status != C.MLN_STATUS_OK {
+			return statusError("mln_texture_destroy", status)
 		}
 		s.ptr = nil
 		if s.cleanup != nil {
 			s.cleanup()
 			s.cleanup = nil
 		}
+		return nil
 	})
-	return err
 }

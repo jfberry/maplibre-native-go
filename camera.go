@@ -37,14 +37,17 @@ type ScreenPoint struct {
 
 // GetCamera returns the current camera snapshot.
 func (m *Map) GetCamera() (Camera, error) {
+	if m == nil {
+		return Camera{}, errClosed("Map.GetCamera", "map")
+	}
 	var out Camera
-	var err error
-	m.rt.d.do(func() {
+	err := m.rt.runOnOwner("Map.GetCamera", func() error {
+		if m.ptr == nil {
+			return errClosed("Map.GetCamera", "map")
+		}
 		ccam := C.mln_camera_options_default()
-		status := C.mln_map_get_camera(m.ptr, &ccam)
-		if status != C.MLN_STATUS_OK {
-			err = statusError("mln_map_get_camera", status)
-			return
+		if status := C.mln_map_get_camera(m.ptr, &ccam); status != C.MLN_STATUS_OK {
+			return statusError("mln_map_get_camera", status)
 		}
 		out = Camera{
 			Fields:    CameraField(ccam.fields),
@@ -54,6 +57,7 @@ func (m *Map) GetCamera() (Camera, error) {
 			Bearing:   float64(ccam.bearing),
 			Pitch:     float64(ccam.pitch),
 		}
+		return nil
 	})
 	return out, err
 }
@@ -61,8 +65,13 @@ func (m *Map) GetCamera() (Camera, error) {
 // JumpTo applies a camera jump command. Only fields indicated by cam.Fields
 // are used.
 func (m *Map) JumpTo(cam Camera) error {
-	var err error
-	m.rt.d.do(func() {
+	if m == nil {
+		return errClosed("Map.JumpTo", "map")
+	}
+	return m.rt.runOnOwner("Map.JumpTo", func() error {
+		if m.ptr == nil {
+			return errClosed("Map.JumpTo", "map")
+		}
 		ccam := C.mln_camera_options_default()
 		ccam.fields = C.uint32_t(cam.Fields)
 		ccam.latitude = C.double(cam.Latitude)
@@ -70,31 +79,39 @@ func (m *Map) JumpTo(cam Camera) error {
 		ccam.zoom = C.double(cam.Zoom)
 		ccam.bearing = C.double(cam.Bearing)
 		ccam.pitch = C.double(cam.Pitch)
-		status := C.mln_map_jump_to(m.ptr, &ccam)
-		if status != C.MLN_STATUS_OK {
-			err = statusError("mln_map_jump_to", status)
+		if status := C.mln_map_jump_to(m.ptr, &ccam); status != C.MLN_STATUS_OK {
+			return statusError("mln_map_jump_to", status)
 		}
+		return nil
 	})
-	return err
 }
 
 // MoveBy pans the camera by a screen-space delta.
 func (m *Map) MoveBy(deltaX, deltaY float64) error {
-	var err error
-	m.rt.d.do(func() {
-		status := C.mln_map_move_by(m.ptr, C.double(deltaX), C.double(deltaY))
-		if status != C.MLN_STATUS_OK {
-			err = statusError("mln_map_move_by", status)
+	if m == nil {
+		return errClosed("Map.MoveBy", "map")
+	}
+	return m.rt.runOnOwner("Map.MoveBy", func() error {
+		if m.ptr == nil {
+			return errClosed("Map.MoveBy", "map")
 		}
+		if status := C.mln_map_move_by(m.ptr, C.double(deltaX), C.double(deltaY)); status != C.MLN_STATUS_OK {
+			return statusError("mln_map_move_by", status)
+		}
+		return nil
 	})
-	return err
 }
 
 // ScaleBy zooms the camera by a multiplicative factor about an optional
 // screen-space anchor (nil anchors center the zoom on the viewport).
 func (m *Map) ScaleBy(scale float64, anchor *ScreenPoint) error {
-	var err error
-	m.rt.d.do(func() {
+	if m == nil {
+		return errClosed("Map.ScaleBy", "map")
+	}
+	return m.rt.runOnOwner("Map.ScaleBy", func() error {
+		if m.ptr == nil {
+			return errClosed("Map.ScaleBy", "map")
+		}
 		var anchorC *C.mln_screen_point
 		var ap C.mln_screen_point
 		if anchor != nil {
@@ -102,48 +119,59 @@ func (m *Map) ScaleBy(scale float64, anchor *ScreenPoint) error {
 			ap.y = C.double(anchor.Y)
 			anchorC = &ap
 		}
-		status := C.mln_map_scale_by(m.ptr, C.double(scale), anchorC)
-		if status != C.MLN_STATUS_OK {
-			err = statusError("mln_map_scale_by", status)
+		if status := C.mln_map_scale_by(m.ptr, C.double(scale), anchorC); status != C.MLN_STATUS_OK {
+			return statusError("mln_map_scale_by", status)
 		}
+		return nil
 	})
-	return err
 }
 
 // RotateBy rotates the camera based on two screen-space points.
 func (m *Map) RotateBy(first, second ScreenPoint) error {
-	var err error
-	m.rt.d.do(func() {
+	if m == nil {
+		return errClosed("Map.RotateBy", "map")
+	}
+	return m.rt.runOnOwner("Map.RotateBy", func() error {
+		if m.ptr == nil {
+			return errClosed("Map.RotateBy", "map")
+		}
 		f := C.mln_screen_point{x: C.double(first.X), y: C.double(first.Y)}
 		s := C.mln_screen_point{x: C.double(second.X), y: C.double(second.Y)}
-		status := C.mln_map_rotate_by(m.ptr, f, s)
-		if status != C.MLN_STATUS_OK {
-			err = statusError("mln_map_rotate_by", status)
+		if status := C.mln_map_rotate_by(m.ptr, f, s); status != C.MLN_STATUS_OK {
+			return statusError("mln_map_rotate_by", status)
 		}
+		return nil
 	})
-	return err
 }
 
 // PitchBy applies a pitch delta.
 func (m *Map) PitchBy(pitch float64) error {
-	var err error
-	m.rt.d.do(func() {
-		status := C.mln_map_pitch_by(m.ptr, C.double(pitch))
-		if status != C.MLN_STATUS_OK {
-			err = statusError("mln_map_pitch_by", status)
+	if m == nil {
+		return errClosed("Map.PitchBy", "map")
+	}
+	return m.rt.runOnOwner("Map.PitchBy", func() error {
+		if m.ptr == nil {
+			return errClosed("Map.PitchBy", "map")
 		}
+		if status := C.mln_map_pitch_by(m.ptr, C.double(pitch)); status != C.MLN_STATUS_OK {
+			return statusError("mln_map_pitch_by", status)
+		}
+		return nil
 	})
-	return err
 }
 
 // CancelTransitions cancels any active camera transitions.
 func (m *Map) CancelTransitions() error {
-	var err error
-	m.rt.d.do(func() {
-		status := C.mln_map_cancel_transitions(m.ptr)
-		if status != C.MLN_STATUS_OK {
-			err = statusError("mln_map_cancel_transitions", status)
+	if m == nil {
+		return errClosed("Map.CancelTransitions", "map")
+	}
+	return m.rt.runOnOwner("Map.CancelTransitions", func() error {
+		if m.ptr == nil {
+			return errClosed("Map.CancelTransitions", "map")
 		}
+		if status := C.mln_map_cancel_transitions(m.ptr); status != C.MLN_STATUS_OK {
+			return statusError("mln_map_cancel_transitions", status)
+		}
+		return nil
 	})
-	return err
 }

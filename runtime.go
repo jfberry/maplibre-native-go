@@ -28,8 +28,12 @@ type Runtime struct {
 	d   *dispatcher
 	ptr *C.mln_runtime
 	// maps tracks live Maps under this Runtime, keyed by their C handle, so
-	// PollEvent can resolve event.source back to the Go *Map.
-	maps sync.Map // map[unsafe.Pointer]*Map
+	// PollEvent can resolve event.source back to the Go *Map. Mutation only
+	// happens inside the dispatcher (NewMap, Map.Close), so plain map +
+	// dispatcher serialization is safe; sync.Map would also work but is
+	// overkill for owner-thread-mutated state.
+	mapsMu sync.RWMutex
+	maps   map[uintptr]*Map
 }
 
 // RuntimeOptions configures NewRuntime. Zero-valued fields are passed as
@@ -48,17 +52,15 @@ type RuntimeOptions struct {
 // NewRuntime spins up a dispatcher goroutine, creates an mln_runtime on it,
 // and returns a Runtime bound to that thread.
 func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
-	rt := &Runtime{}
+	rt := &Runtime{maps: make(map[uintptr]*Map)}
 	rt.d = newDispatcher(func() {
 		if rt.ptr != nil {
 			C.mln_runtime_run_once(rt.ptr)
 		}
 	}, 0)
 
-	var err error
-	rt.d.do(func() {
+	createErr := rt.runOnOwner("NewRuntime", func() error {
 		copts := C.mln_runtime_options_default()
-
 		if opts.AssetPath != "" {
 			cs := C.CString(opts.AssetPath)
 			defer C.free(unsafe.Pointer(cs))
@@ -73,43 +75,72 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 			copts.flags |= C.MLN_RUNTIME_OPTION_MAXIMUM_CACHE_SIZE
 			copts.maximum_cache_size = C.uint64_t(opts.MaximumCacheSize)
 		}
-
 		var out *C.mln_runtime
-		status := C.mln_runtime_create(&copts, &out)
-		if status != C.MLN_STATUS_OK {
-			err = statusError("mln_runtime_create", status)
-			return
+		if status := C.mln_runtime_create(&copts, &out); status != C.MLN_STATUS_OK {
+			return statusError("mln_runtime_create", status)
 		}
 		rt.ptr = out
+		return nil
 	})
-
-	if err != nil {
+	if createErr != nil {
 		rt.d.close()
-		return nil, err
+		return nil, createErr
 	}
 	return rt, nil
 }
 
+// runOnOwner runs fn on this runtime's owner thread. If the runtime's
+// dispatcher has been closed, returns an *Error tagged with op (Status
+// matches the convention used by errClosed elsewhere in the binding).
+// Otherwise returns whatever fn returns. fn runs serialized with all
+// other ABI calls into this runtime — it is the only place where
+// pointer fields (Runtime.ptr, Map.ptr, TextureSession.ptr) may be
+// safely read or mutated, since no other goroutine touches them.
+func (r *Runtime) runOnOwner(op string, fn func() error) error {
+	var fnErr error
+	if dErr := r.d.do(func() {
+		fnErr = fn()
+	}); dErr != nil {
+		return &Error{Status: StatusInvalidArgument, Op: op, Message: "runtime is closed"}
+	}
+	return fnErr
+}
+
+// errClosed returns the conventional "X is closed" error.
+func errClosed(op, what string) error {
+	return &Error{Status: StatusInvalidArgument, Op: op, Message: what + " is closed"}
+}
+
 // Close destroys the runtime handle and stops the dispatcher.
+//
+// All Maps created from this Runtime must be closed first; otherwise
+// Close returns an error and leaves the runtime running so the caller
+// can close its maps and retry.
 //
 // Idempotent: safe to call on a nil Runtime or one already closed.
 func (r *Runtime) Close() error {
-	if r == nil || r.ptr == nil {
+	if r == nil {
 		return nil
 	}
-	var err error
-	r.d.do(func() {
-		status := C.mln_runtime_destroy(r.ptr)
-		if status != C.MLN_STATUS_OK {
-			err = statusError("mln_runtime_destroy", status)
+	var destroyErr error
+	dErr := r.d.do(func() {
+		if r.ptr == nil {
+			return
+		}
+		if status := C.mln_runtime_destroy(r.ptr); status != C.MLN_STATUS_OK {
+			destroyErr = statusError("mln_runtime_destroy", status)
 			return
 		}
 		r.ptr = nil
 	})
-	if err != nil {
-		// Native rejected destroy (e.g. live maps). Keep the dispatcher
-		// running so callers can close their maps and retry.
-		return err
+	if dErr != nil {
+		// Already closed; no-op.
+		return nil
+	}
+	if destroyErr != nil {
+		// Native rejected destroy (live maps). Keep dispatcher running so
+		// the caller can close its maps and retry.
+		return destroyErr
 	}
 	r.d.close()
 	return nil
@@ -125,19 +156,19 @@ func (r *Runtime) Close() error {
 func (r *Runtime) PollEvent() (Event, bool, error) {
 	var out Event
 	var has bool
-	var err error
-	r.d.do(func() {
+	err := r.runOnOwner("Runtime.PollEvent", func() error {
+		if r.ptr == nil {
+			return errClosed("Runtime.PollEvent", "runtime")
+		}
 		var cev C.mln_runtime_event
 		cev.size = C.uint32_t(unsafe.Sizeof(cev))
 		var hasEvent C.bool
-		status := C.mln_runtime_poll_event(r.ptr, &cev, &hasEvent)
-		if status != C.MLN_STATUS_OK {
-			err = statusError("mln_runtime_poll_event", status)
-			return
+		if status := C.mln_runtime_poll_event(r.ptr, &cev, &hasEvent); status != C.MLN_STATUS_OK {
+			return statusError("mln_runtime_poll_event", status)
 		}
 		has = bool(hasEvent)
 		if !has {
-			return
+			return nil
 		}
 		out.Type = EventType(cev._type)
 		out.Code = int32(cev.code)
@@ -145,10 +176,11 @@ func (r *Runtime) PollEvent() (Event, bool, error) {
 			out.Message = C.GoStringN((*C.char)(unsafe.Pointer(cev.message)), C.int(cev.message_size))
 		}
 		if cev.source_type == C.MLN_RUNTIME_EVENT_SOURCE_MAP && cev.source != nil {
-			if v, ok := r.maps.Load(cev.source); ok {
-				out.Source = v.(*Map)
-			}
+			r.mapsMu.RLock()
+			out.Source = r.maps[uintptr(cev.source)]
+			r.mapsMu.RUnlock()
 		}
+		return nil
 	})
 	return out, has, err
 }
@@ -170,4 +202,19 @@ func (r *Runtime) WaitForEvent(timeout time.Duration, match func(Event) bool) (E
 		}
 		time.Sleep(pollInterval)
 	}
+}
+
+// registerMap is called by NewMap on the dispatcher thread to record a
+// new Map handle for source-resolution in PollEvent.
+func (r *Runtime) registerMap(m *Map) {
+	r.mapsMu.Lock()
+	r.maps[uintptr(unsafe.Pointer(m.ptr))] = m
+	r.mapsMu.Unlock()
+}
+
+// unregisterMap is called by Map.Close on the dispatcher thread.
+func (r *Runtime) unregisterMap(cptr uintptr) {
+	r.mapsMu.Lock()
+	delete(r.maps, cptr)
+	r.mapsMu.Unlock()
 }
