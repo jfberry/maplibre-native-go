@@ -11,27 +11,30 @@ import "fmt"
 // runtime's event queue regardless of which Map (or Runtime) they
 // originated on; the Source field of Event identifies the originating
 // Map (or nil for runtime-source events).
+//
+// Values are typed against the C constants so a drift in upstream
+// values fails to compile.
 type EventType uint32
 
 const (
-	EventCameraWillChange      EventType = 1
-	EventCameraIsChanging      EventType = 2
-	EventCameraDidChange       EventType = 3
-	EventStyleLoaded           EventType = 4
-	EventMapLoadingStarted     EventType = 5
-	EventMapLoadingFinished    EventType = 6
-	EventMapLoadingFailed      EventType = 7
-	EventMapIdle               EventType = 8
-	EventRenderUpdateAvailable EventType = 9
-	EventRenderError           EventType = 10
-	EventStillImageFinished    EventType = 11
-	EventStillImageFailed      EventType = 12
-	EventRenderFrameStarted    EventType = 13
-	EventRenderFrameFinished   EventType = 14
-	EventRenderMapStarted      EventType = 15
-	EventRenderMapFinished     EventType = 16
-	EventStyleImageMissing     EventType = 17
-	EventTileAction            EventType = 18
+	EventCameraWillChange      EventType = EventType(C.MLN_RUNTIME_EVENT_MAP_CAMERA_WILL_CHANGE)
+	EventCameraIsChanging      EventType = EventType(C.MLN_RUNTIME_EVENT_MAP_CAMERA_IS_CHANGING)
+	EventCameraDidChange       EventType = EventType(C.MLN_RUNTIME_EVENT_MAP_CAMERA_DID_CHANGE)
+	EventStyleLoaded           EventType = EventType(C.MLN_RUNTIME_EVENT_MAP_STYLE_LOADED)
+	EventMapLoadingStarted     EventType = EventType(C.MLN_RUNTIME_EVENT_MAP_LOADING_STARTED)
+	EventMapLoadingFinished    EventType = EventType(C.MLN_RUNTIME_EVENT_MAP_LOADING_FINISHED)
+	EventMapLoadingFailed      EventType = EventType(C.MLN_RUNTIME_EVENT_MAP_LOADING_FAILED)
+	EventMapIdle               EventType = EventType(C.MLN_RUNTIME_EVENT_MAP_IDLE)
+	EventRenderUpdateAvailable EventType = EventType(C.MLN_RUNTIME_EVENT_MAP_RENDER_UPDATE_AVAILABLE)
+	EventRenderError           EventType = EventType(C.MLN_RUNTIME_EVENT_MAP_RENDER_ERROR)
+	EventStillImageFinished    EventType = EventType(C.MLN_RUNTIME_EVENT_MAP_STILL_IMAGE_FINISHED)
+	EventStillImageFailed      EventType = EventType(C.MLN_RUNTIME_EVENT_MAP_STILL_IMAGE_FAILED)
+	EventRenderFrameStarted    EventType = EventType(C.MLN_RUNTIME_EVENT_MAP_RENDER_FRAME_STARTED)
+	EventRenderFrameFinished   EventType = EventType(C.MLN_RUNTIME_EVENT_MAP_RENDER_FRAME_FINISHED)
+	EventRenderMapStarted      EventType = EventType(C.MLN_RUNTIME_EVENT_MAP_RENDER_MAP_STARTED)
+	EventRenderMapFinished     EventType = EventType(C.MLN_RUNTIME_EVENT_MAP_RENDER_MAP_FINISHED)
+	EventStyleImageMissing     EventType = EventType(C.MLN_RUNTIME_EVENT_MAP_STYLE_IMAGE_MISSING)
+	EventTileAction            EventType = EventType(C.MLN_RUNTIME_EVENT_MAP_TILE_ACTION)
 )
 
 func (e EventType) String() string {
@@ -86,4 +89,25 @@ type Event struct {
 	Code    int32
 	Source  *Map // nil if event source is the runtime itself
 	Message string
+}
+
+// EventOfType returns a predicate matching events with the given type
+// and ignoring source. Convenience for WaitForEvent:
+//
+//	rt.WaitForEvent(ctx, maplibre.EventOfType(maplibre.EventStyleLoaded))
+func EventOfType(t EventType) func(Event) bool {
+	return func(e Event) bool { return e.Type == t }
+}
+
+// EventOfTypes returns a predicate matching events whose type is in any
+// of the supplied set.
+func EventOfTypes(ts ...EventType) func(Event) bool {
+	return func(e Event) bool {
+		for _, t := range ts {
+			if e.Type == t {
+				return true
+			}
+		}
+		return false
+	}
 }

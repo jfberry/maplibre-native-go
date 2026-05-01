@@ -1,6 +1,7 @@
 package maplibre
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -24,7 +25,9 @@ func TestSetStyleJSONLoadsAndEmitsStyleLoaded(t *testing.T) {
 		t.Fatalf("SetStyleJSON: %v", err)
 	}
 
-	ev, err := m.WaitForEvent(2*time.Second, func(e Event) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ev, err := m.WaitForEvent(ctx, func(e Event) bool {
 		return e.Type == EventStyleLoaded || e.Type == EventMapLoadingFailed
 	})
 	if err != nil {
@@ -48,7 +51,9 @@ func TestSetStyleJSONInvalid(t *testing.T) {
 		return
 	}
 
-	ev, err := m.WaitForEvent(2*time.Second, func(e Event) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ev, err := m.WaitForEvent(ctx, func(e Event) bool {
 		return e.Type == EventStyleLoaded || e.Type == EventMapLoadingFailed
 	})
 	if err != nil {

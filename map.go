@@ -7,6 +7,8 @@ package maplibre
 import "C"
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"time"
 	"unsafe"
@@ -19,18 +21,23 @@ type Map struct {
 	ptr *C.mln_map
 }
 
-// MapMode mirrors mln_map_mode. The zero-value (MapModeStatic) is the
-// natural default for this binding because the public RenderStill /
-// RenderImage path uses request_still_image, which requires a static- or
-// tile-mode map. Set Mode = MapModeContinuous if you want to drive
-// rendering yourself via TextureSession.RenderUpdate on
+// MapMode picks the rendering protocol the map will use. The zero value
+// (MapModeStatic) matches this binding's primary path: RenderStill /
+// RenderImage via request_still_image. Set Mode = MapModeContinuous to
+// drive rendering yourself via TextureSession.RenderUpdate on
 // MAP_RENDER_UPDATE_AVAILABLE events.
+//
+// MapMode is an opaque Go enum that does NOT mirror the underlying C
+// MLN_MAP_MODE_* values directly; the binding translates in toC. This
+// preserves Go's "useful zero value" convention — MapOptions{} gives
+// you a static-mode map, the most common case — without requiring
+// callers to know the C enum encoding.
 type MapMode int
 
 const (
-	MapModeStatic     MapMode = iota // 0 (default; mln_map_mode_static)
-	MapModeContinuous                // 1 (mln_map_mode_continuous)
-	MapModeTile                      // 2 (mln_map_mode_tile)
+	MapModeStatic     MapMode = iota // default zero-value
+	MapModeContinuous                //
+	MapModeTile                      //
 )
 
 func (m MapMode) toC() C.uint32_t {
@@ -44,13 +51,21 @@ func (m MapMode) toC() C.uint32_t {
 	}
 }
 
-// MapOptions configures NewMap. Width and Height are logical dimensions;
-// physical render size is multiplied by ScaleFactor.
+// MapOptions configures NewMap.
+//
+// Width and Height are logical dimensions in pixels; physical render
+// size is logical × ScaleFactor.
+//
+// Zero values:
+//   - ScaleFactor: 1.0
+//   - Mode: MapModeStatic
+//
+// Width and Height MUST be non-zero — there is no useful default.
 type MapOptions struct {
 	Width       uint32
 	Height      uint32
-	ScaleFactor float64
-	Mode        MapMode // defaults to MapModeStatic
+	ScaleFactor float64 // zero defaults to 1.0
+	Mode        MapMode // zero defaults to MapModeStatic
 }
 
 // NewMap creates a map on the runtime owner thread.
@@ -67,15 +82,13 @@ func (r *Runtime) NewMap(opts MapOptions) (*Map, error) {
 			return errClosed("Runtime.NewMap", "runtime")
 		}
 		copts := C.mln_map_options_default()
-		if opts.Width > 0 {
-			copts.width = C.uint32_t(opts.Width)
+		copts.width = C.uint32_t(opts.Width)
+		copts.height = C.uint32_t(opts.Height)
+		scale := opts.ScaleFactor
+		if scale <= 0 {
+			scale = 1
 		}
-		if opts.Height > 0 {
-			copts.height = C.uint32_t(opts.Height)
-		}
-		if opts.ScaleFactor > 0 {
-			copts.scale_factor = C.double(opts.ScaleFactor)
-		}
+		copts.scale_factor = C.double(scale)
 		copts.map_mode = opts.Mode.toC()
 
 		var out *C.mln_map
@@ -158,8 +171,10 @@ func (m *Map) SetStyleJSON(json string) error {
 // WaitForEvent waits for a runtime event whose Source is this Map and
 // for which match returns true. Filters out events for other Maps owned
 // by the same Runtime; if you need cross-map events use Runtime.WaitForEvent.
-func (m *Map) WaitForEvent(timeout time.Duration, match func(Event) bool) (Event, error) {
-	return m.rt.WaitForEvent(timeout, func(e Event) bool {
+//
+// Cancellation: returns ctx.Err() wrapped in ErrTimeout when ctx is done.
+func (m *Map) WaitForEvent(ctx context.Context, match func(Event) bool) (Event, error) {
+	return m.rt.WaitForEvent(ctx, func(e Event) bool {
 		return e.Source == m && match(e)
 	})
 }
@@ -172,7 +187,9 @@ func (m *Map) WaitForEvent(timeout time.Duration, match func(Event) bool) (Event
 //
 // The caller owns the returned frame and must call sess.ReleaseFrame on
 // it before the next render or destroy.
-func (m *Map) RenderStill(sess *TextureSession, timeout time.Duration) (TextureFrame, error) {
+//
+// Cancellation: returns ctx.Err() wrapped in ErrTimeout when ctx is done.
+func (m *Map) RenderStill(ctx context.Context, sess *TextureSession) (TextureFrame, error) {
 	if m == nil {
 		return TextureFrame{}, errClosed("Map.RenderStill", "map")
 	}
@@ -195,15 +212,18 @@ func (m *Map) RenderStill(sess *TextureSession, timeout time.Duration) (TextureF
 		return TextureFrame{}, err
 	}
 
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	for {
 		ev, has, err := m.rt.PollEvent()
 		if err != nil {
 			return TextureFrame{}, err
 		}
 		if !has {
-			time.Sleep(pollInterval)
-			continue
+			select {
+			case <-ctx.Done():
+				return TextureFrame{}, fmt.Errorf("%w: %w", ErrTimeout, ctx.Err())
+			case <-time.After(pollInterval):
+				continue
+			}
 		}
 		if ev.Source != m {
 			continue
@@ -211,8 +231,8 @@ func (m *Map) RenderStill(sess *TextureSession, timeout time.Duration) (TextureF
 		switch ev.Type {
 		case EventRenderUpdateAvailable:
 			if err := sess.RenderUpdate(); err != nil {
-				var mlnErr *Error
-				if asMLN(err, &mlnErr) && mlnErr.Status == StatusInvalidState {
+				if errors.Is(err, ErrInvalidState) {
+					// Renderer caught up between event and call.
 					continue
 				}
 				return TextureFrame{}, err
@@ -220,27 +240,9 @@ func (m *Map) RenderStill(sess *TextureSession, timeout time.Duration) (TextureF
 		case EventStillImageFinished:
 			return sess.AcquireFrame()
 		case EventStillImageFailed:
-			return TextureFrame{}, fmt.Errorf("STILL_IMAGE_FAILED: code=%d msg=%q", ev.Code, ev.Message)
+			return TextureFrame{}, &Error{Status: StatusNativeError, Op: "Map.RenderStill", Message: fmt.Sprintf("STILL_IMAGE_FAILED code=%d %s", ev.Code, ev.Message)}
 		case EventMapLoadingFailed, EventRenderError:
-			return TextureFrame{}, fmt.Errorf("%s: code=%d msg=%q", ev.Type, ev.Code, ev.Message)
+			return TextureFrame{}, &Error{Status: StatusNativeError, Op: "Map.RenderStill", Message: fmt.Sprintf("%s code=%d %s", ev.Type, ev.Code, ev.Message)}
 		}
 	}
-	return TextureFrame{}, fmt.Errorf("RenderStill: timeout after %s without STILL_IMAGE_FINISHED", timeout)
-}
-
-// asMLN unwraps to *Error without importing errors here.
-func asMLN(err error, target **Error) bool {
-	for err != nil {
-		if e, ok := err.(*Error); ok {
-			*target = e
-			return true
-		}
-		type unwrapper interface{ Unwrap() error }
-		u, ok := err.(unwrapper)
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
-	}
-	return false
 }

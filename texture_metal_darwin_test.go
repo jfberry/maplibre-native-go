@@ -3,6 +3,7 @@
 package maplibre
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -20,7 +21,9 @@ func TestMetalTextureLifecycle(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sess.Close() })
 
-	frame, err := m.RenderStill(sess, 5*time.Second)
+	renderCtx, renderCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer renderCancel()
+	frame, err := m.RenderStill(renderCtx, sess)
 	if err != nil {
 		t.Fatalf("RenderStill: %v", err)
 	}
@@ -56,7 +59,9 @@ func TestMetalTextureResizeBetweenRenders(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sess.Close() })
 
-	frame1, err := m.RenderStill(sess, 5*time.Second)
+	r1Ctx, r1Cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer r1Cancel()
+	frame1, err := m.RenderStill(r1Ctx, sess)
 	if err != nil {
 		t.Fatalf("RenderStill 256: %v", err)
 	}
@@ -68,7 +73,9 @@ func TestMetalTextureResizeBetweenRenders(t *testing.T) {
 		t.Fatalf("Resize: %v", err)
 	}
 
-	frame2, err := m.RenderStill(sess, 5*time.Second)
+	r2Ctx, r2Cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer r2Cancel()
+	frame2, err := m.RenderStill(r2Ctx, sess)
 	if err != nil {
 		t.Fatalf("RenderStill 512x384: %v", err)
 	}

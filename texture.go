@@ -6,8 +6,8 @@ package maplibre
 import "C"
 
 import (
+	"context"
 	"fmt"
-	"time"
 	"unsafe"
 )
 
@@ -98,65 +98,66 @@ func (s *TextureSession) Detach() error {
 	})
 }
 
-// RenderStillImage drives the static-render protocol and returns the
-// rendered map as RGBA bytes.
+// RenderImage drives the static-render protocol and returns the rendered
+// map as RGBA bytes.
 //
 // The returned buffer is **premultiplied** RGBA (matching mbgl's native
-// PremultipliedImage), tightly packed (stride == width*4), with width and
-// height in physical pixels (logical * scale_factor). A new slice is
-// allocated per call; use RenderStillImageInto for buffer reuse in tight
-// loops.
+// PremultipliedImage), tightly packed (one row = width*4 bytes), with
+// width and height in physical pixels (logical * scale_factor). A new
+// slice is allocated per call; use RenderImageInto for buffer reuse in
+// tight loops.
 //
 // Internally: RenderStill -> readback -> ReleaseFrame. The frame's borrowed
 // GPU handles never escape this call.
-func (m *Map) RenderStillImage(sess *TextureSession, timeout time.Duration) (rgba []byte, width, height, stride int, err error) {
-	frame, ferr := m.RenderStill(sess, timeout)
+//
+// Cancellation: returns ctx.Err() wrapped in ErrTimeout when ctx is done
+// before STILL_IMAGE_FINISHED arrives.
+func (m *Map) RenderImage(ctx context.Context, sess *TextureSession) (rgba []byte, width, height int, err error) {
+	frame, ferr := m.RenderStill(ctx, sess)
 	if ferr != nil {
-		return nil, 0, 0, 0, ferr
+		return nil, 0, 0, ferr
 	}
 	defer sess.ReleaseFrame(frame)
 
 	width = int(frame.Width)
 	height = int(frame.Height)
-	stride = width * 4
-	rgba = make([]byte, stride*height)
+	rgba = make([]byte, width*height*4)
 	if rerr := readbackFrame(sess, frame, rgba); rerr != nil {
-		return nil, 0, 0, 0, rerr
+		return nil, 0, 0, rerr
 	}
-	return rgba, width, height, stride, nil
+	return rgba, width, height, nil
 }
 
-// RenderStillImageInto is the buffer-reuse variant of RenderStillImage.
+// RenderImageInto is the buffer-reuse variant of RenderImage.
 // dst must have at least width*height*4 bytes; if not, returns an Error
 // with StatusInvalidArgument and dst is untouched. Returns the actual
-// width, height, and stride of the rendered frame.
+// width and height of the rendered frame; the row stride is always w*4.
 //
 // width/height aren't known until the frame is acquired, so a typical
 // caller pre-allocates a buffer sized to its known viewport (matching
 // MapOptions or TextureSession.Resize) and feeds the same slice to every
 // render.
-func (m *Map) RenderStillImageInto(sess *TextureSession, timeout time.Duration, dst []byte) (width, height, stride int, err error) {
-	frame, ferr := m.RenderStill(sess, timeout)
+func (m *Map) RenderImageInto(ctx context.Context, sess *TextureSession, dst []byte) (width, height int, err error) {
+	frame, ferr := m.RenderStill(ctx, sess)
 	if ferr != nil {
-		return 0, 0, 0, ferr
+		return 0, 0, ferr
 	}
 	defer sess.ReleaseFrame(frame)
 
 	width = int(frame.Width)
 	height = int(frame.Height)
-	stride = width * 4
-	needed := stride * height
+	needed := width * height * 4
 	if len(dst) < needed {
-		return 0, 0, 0, &Error{
+		return 0, 0, &Error{
 			Status:  StatusInvalidArgument,
-			Op:      "Map.RenderStillImageInto",
+			Op:      "Map.RenderImageInto",
 			Message: fmt.Sprintf("dst length %d < needed %d (%dx%d * 4)", len(dst), needed, width, height),
 		}
 	}
 	if rerr := readbackFrame(sess, frame, dst[:needed]); rerr != nil {
-		return 0, 0, 0, rerr
+		return 0, 0, rerr
 	}
-	return width, height, stride, nil
+	return width, height, nil
 }
 
 // Close destroys the session handle. If still attached, this detaches first.

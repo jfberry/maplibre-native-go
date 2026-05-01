@@ -12,6 +12,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"image"
 	"image/png"
@@ -59,7 +60,9 @@ func main() {
 	if err := loadStyle(m, *style); err != nil {
 		log.Fatalf("load style: %v", err)
 	}
-	if _, err := m.WaitForEvent(*loadTimeout, func(e maplibre.Event) bool {
+	loadCtx, loadCancel := context.WithTimeout(context.Background(), *loadTimeout)
+	defer loadCancel()
+	if _, err := m.WaitForEvent(loadCtx, func(e maplibre.Event) bool {
 		return e.Type == maplibre.EventStyleLoaded || e.Type == maplibre.EventMapLoadingFailed
 	}); err != nil {
 		log.Fatalf("waiting for STYLE_LOADED: %v", err)
@@ -83,9 +86,11 @@ func main() {
 	}
 	defer sess.Close()
 
-	rgba, w, h, _, err := m.RenderStillImage(sess, *frameTimeout)
+	renderCtx, renderCancel := context.WithTimeout(context.Background(), *frameTimeout)
+	defer renderCancel()
+	rgba, w, h, err := m.RenderImage(renderCtx, sess)
 	if err != nil {
-		log.Fatalf("RenderStillImage: %v", err)
+		log.Fatalf("RenderImage: %v", err)
 	}
 
 	// maplibre returns premultiplied RGBA; PNG consumers usually want

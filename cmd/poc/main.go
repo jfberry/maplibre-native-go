@@ -12,6 +12,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"strings"
@@ -65,7 +66,9 @@ func main() {
 	if err := loadStyle(m, *style); err != nil {
 		log.Fatalf("loadStyle: %v", err)
 	}
-	if _, err := m.WaitForEvent(*timeout, func(e maplibre.Event) bool {
+	loadCtx, loadCancel := context.WithTimeout(context.Background(), *timeout)
+	defer loadCancel()
+	if _, err := m.WaitForEvent(loadCtx, func(e maplibre.Event) bool {
 		log.Printf("event: %s code=%d msg=%q", e.Type, e.Code, e.Message)
 		return e.Type == maplibre.EventStyleLoaded || e.Type == maplibre.EventMapLoadingFailed
 	}); err != nil {
@@ -99,7 +102,9 @@ func main() {
 	}()
 	log.Printf("metal texture session attached")
 
-	frame, err := m.RenderStill(sess, *timeout)
+	renderCtx, renderCancel := context.WithTimeout(context.Background(), *timeout)
+	defer renderCancel()
+	frame, err := m.RenderStill(renderCtx, sess)
 	if err != nil {
 		log.Fatalf("RenderStill: %v", err)
 	}

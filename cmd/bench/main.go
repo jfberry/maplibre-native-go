@@ -8,6 +8,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -63,7 +64,9 @@ func main() {
 	if err := loadStyle(m, *style); err != nil {
 		log.Fatalf("load style: %v", err)
 	}
-	if _, err := m.WaitForEvent(*loadTimeout, func(e maplibre.Event) bool {
+	loadCtx, loadCancel := context.WithTimeout(context.Background(), *loadTimeout)
+	defer loadCancel()
+	if _, err := m.WaitForEvent(loadCtx, func(e maplibre.Event) bool {
 		return e.Type == maplibre.EventStyleLoaded || e.Type == maplibre.EventMapLoadingFailed
 	}); err != nil {
 		log.Fatalf("waiting for STYLE_LOADED: %v", err)
@@ -92,7 +95,9 @@ func main() {
 			return 0, fmt.Errorf("JumpTo: %w", err)
 		}
 		t0 := time.Now()
-		frame, err := m.RenderStill(sess, *frameTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), *frameTimeout)
+		frame, err := m.RenderStill(ctx, sess)
+		cancel()
 		dur = time.Since(t0)
 		if err != nil {
 			return dur, err

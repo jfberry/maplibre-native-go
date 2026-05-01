@@ -7,6 +7,7 @@ package maplibre
 import "C"
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -185,10 +186,18 @@ func (r *Runtime) PollEvent() (Event, bool, error) {
 	return out, has, err
 }
 
-// WaitForEvent polls runtime events until match returns true, the
-// deadline passes, or an error occurs.
-func (r *Runtime) WaitForEvent(timeout time.Duration, match func(Event) bool) (Event, error) {
-	deadline := time.Now().Add(timeout)
+// WaitForEvent polls runtime events until match returns true, ctx is
+// cancelled, or an error occurs.
+//
+// On cancellation returns ctx.Err() (context.Canceled or
+// context.DeadlineExceeded) wrapped with ErrTimeout for ergonomic
+// matching:
+//
+//	if errors.Is(err, maplibre.ErrTimeout) { ... }
+//	if errors.Is(err, context.DeadlineExceeded) { ... }
+//
+// Both predicates work.
+func (r *Runtime) WaitForEvent(ctx context.Context, match func(Event) bool) (Event, error) {
 	for {
 		ev, has, err := r.PollEvent()
 		if err != nil {
@@ -197,10 +206,11 @@ func (r *Runtime) WaitForEvent(timeout time.Duration, match func(Event) bool) (E
 		if has && match(ev) {
 			return ev, nil
 		}
-		if time.Now().After(deadline) {
-			return Event{}, fmt.Errorf("timeout after %s waiting for runtime event", timeout)
+		select {
+		case <-ctx.Done():
+			return Event{}, fmt.Errorf("%w: %w", ErrTimeout, ctx.Err())
+		case <-time.After(pollInterval):
 		}
-		time.Sleep(pollInterval)
 	}
 }
 

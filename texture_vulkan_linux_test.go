@@ -3,6 +3,7 @@
 package maplibre
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -19,7 +20,9 @@ func TestVulkanTextureLifecycle(t *testing.T) {
 	if err := m.SetStyleJSON(`{"version":8,"sources":{},"layers":[]}`); err != nil {
 		t.Fatalf("SetStyleJSON: %v", err)
 	}
-	if _, err := m.WaitForEvent(2*time.Second, func(e Event) bool {
+	loadCtx, loadCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer loadCancel()
+	if _, err := m.WaitForEvent(loadCtx, func(e Event) bool {
 		return e.Type == EventStyleLoaded || e.Type == EventMapLoadingFailed
 	}); err != nil {
 		t.Fatalf("waiting for STYLE_LOADED: %v", err)
@@ -35,7 +38,9 @@ func TestVulkanTextureLifecycle(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sess.Close() })
 
-	frame, err := m.RenderStill(sess, 5*time.Second)
+	renderCtx, renderCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer renderCancel()
+	frame, err := m.RenderStill(renderCtx, sess)
 	if err != nil {
 		t.Fatalf("RenderStill: %v", err)
 	}

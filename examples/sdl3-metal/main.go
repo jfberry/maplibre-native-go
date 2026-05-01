@@ -40,6 +40,7 @@ static inline uint32_t mln_event_type(SDL_Event *e) { return e->type; }
 import "C"
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -128,7 +129,9 @@ func main() {
 	if err := loadStyle(m, *style); err != nil {
 		log.Fatalf("load style: %v", err)
 	}
-	if _, err := m.WaitForEvent(*loadTimeout, func(e maplibre.Event) bool {
+	loadCtx, loadCancel := context.WithTimeout(context.Background(), *loadTimeout)
+	defer loadCancel()
+	if _, err := m.WaitForEvent(loadCtx, func(e maplibre.Event) bool {
 		return e.Type == maplibre.EventStyleLoaded || e.Type == maplibre.EventMapLoadingFailed
 	}); err != nil {
 		log.Fatalf("waiting for STYLE_LOADED: %v", err)
@@ -149,7 +152,9 @@ func main() {
 	}
 	defer sess.Close()
 
-	frame, err := m.RenderStill(sess, *frameTimeout)
+	renderCtx, renderCancel := context.WithTimeout(context.Background(), *frameTimeout)
+	defer renderCancel()
+	frame, err := m.RenderStill(renderCtx, sess)
 	if err != nil {
 		log.Fatalf("RenderStill: %v", err)
 	}

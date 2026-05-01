@@ -1,6 +1,7 @@
 package maplibre
 
 import (
+	"context"
 	"math"
 	"testing"
 	"time"
@@ -11,7 +12,9 @@ func loadEmptyStyle(t *testing.T, m *Map) {
 	if err := m.SetStyleJSON(`{"version":8,"sources":{},"layers":[]}`); err != nil {
 		t.Fatalf("SetStyleJSON: %v", err)
 	}
-	if _, err := m.WaitForEvent(2*time.Second, func(e Event) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := m.WaitForEvent(ctx, func(e Event) bool {
 		return e.Type == EventStyleLoaded || e.Type == EventMapLoadingFailed
 	}); err != nil {
 		t.Fatalf("waiting for STYLE_LOADED: %v", err)

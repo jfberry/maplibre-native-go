@@ -1,6 +1,7 @@
 package maplibre
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strconv"
@@ -54,7 +55,9 @@ func TestSmokeRealAssets(t *testing.T) {
 	if err := loadStyle(m, style); err != nil {
 		t.Fatalf("load style: %v", err)
 	}
-	if _, err := m.WaitForEvent(timeout, func(e Event) bool {
+	loadCtx, loadCancel := context.WithTimeout(context.Background(), timeout)
+	defer loadCancel()
+	if _, err := m.WaitForEvent(loadCtx, func(e Event) bool {
 		return e.Type == EventStyleLoaded || e.Type == EventMapLoadingFailed
 	}); err != nil {
 		t.Fatalf("waiting for STYLE_LOADED: %v", err)
@@ -79,7 +82,9 @@ func TestSmokeRealAssets(t *testing.T) {
 	}
 	defer sess.Close()
 
-	frame, err := m.RenderStill(sess, timeout)
+	renderCtx, renderCancel := context.WithTimeout(context.Background(), timeout)
+	defer renderCancel()
+	frame, err := m.RenderStill(renderCtx, sess)
 	if err != nil {
 		t.Fatalf("RenderStill: %v", err)
 	}

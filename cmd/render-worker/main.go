@@ -19,6 +19,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"flag"
@@ -154,7 +155,9 @@ func run(stylePath, styleID string, ratio uint32, loadTimeout, frameTimeout time
 	if err := loadStyle(m, stylePath); err != nil {
 		return fmt.Errorf("loading style: %w", err)
 	}
-	if _, err := m.WaitForEvent(loadTimeout, func(e maplibre.Event) bool {
+	loadCtx, loadCancel := context.WithTimeout(context.Background(), loadTimeout)
+	defer loadCancel()
+	if _, err := m.WaitForEvent(loadCtx, func(e maplibre.Event) bool {
 		return e.Type == maplibre.EventStyleLoaded || e.Type == maplibre.EventMapLoadingFailed
 	}); err != nil {
 		return fmt.Errorf("waiting for STYLE_LOADED: %w", err)
@@ -249,9 +252,11 @@ func (w *worker) handle(payload []byte) ([]byte, error) {
 		return nil, fmt.Errorf("JumpTo: %w", err)
 	}
 
-	gw, gh, _, err := w.m.RenderStillImageInto(w.sess, w.timeout, w.buf)
+	ctx, cancel := context.WithTimeout(context.Background(), w.timeout)
+	defer cancel()
+	gw, gh, err := w.m.RenderImageInto(ctx, w.sess, w.buf)
 	if err != nil {
-		return nil, fmt.Errorf("RenderStillImageInto: %w", err)
+		return nil, fmt.Errorf("RenderImageInto: %w", err)
 	}
 	want := int(req.Width) * int(w.ratio)
 	wantH := int(req.Height) * int(w.ratio)

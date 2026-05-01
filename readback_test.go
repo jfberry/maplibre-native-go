@@ -1,6 +1,7 @@
 package maplibre
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -12,7 +13,7 @@ const yellowBackgroundStyle = `{
   "layers": [{"id":"bg","type":"background","paint":{"background-color":"#FFAA00"}}]
 }`
 
-// TestRenderStillImageBackgroundColor renders a 64x64 viewport with a
+// TestRenderImageBackgroundColor renders a 64x64 viewport with a
 // solid #FFAA00 background and asserts the readback bytes match. This is
 // a real correctness test for the GPU->CPU pipeline: it catches byte
 // order (RGBA vs BGRA), incorrect stride, alpha premultiplication
@@ -20,7 +21,7 @@ const yellowBackgroundStyle = `{
 //
 // Skipped if the platform's GPU backend isn't available (no Metal device,
 // no Vulkan ICD).
-func TestRenderStillImageBackgroundColor(t *testing.T) {
+func TestRenderImageBackgroundColor(t *testing.T) {
 	rt := newTestRuntime(t)
 	const w, h = 64, 64
 	m, err := rt.NewMap(MapOptions{Width: w, Height: h, ScaleFactor: 1})
@@ -32,7 +33,9 @@ func TestRenderStillImageBackgroundColor(t *testing.T) {
 	if err := m.SetStyleJSON(yellowBackgroundStyle); err != nil {
 		t.Fatalf("SetStyleJSON: %v", err)
 	}
-	if _, err := m.WaitForEvent(2*time.Second, func(e Event) bool {
+	loadCtx, loadCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer loadCancel()
+	if _, err := m.WaitForEvent(loadCtx, func(e Event) bool {
 		return e.Type == EventStyleLoaded || e.Type == EventMapLoadingFailed
 	}); err != nil {
 		t.Fatalf("waiting for STYLE_LOADED: %v", err)
@@ -48,15 +51,14 @@ func TestRenderStillImageBackgroundColor(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sess.Close() })
 
-	rgba, gw, gh, stride, err := m.RenderStillImage(sess, 5*time.Second)
+	renderCtx, renderCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer renderCancel()
+	rgba, gw, gh, err := m.RenderImage(renderCtx, sess)
 	if err != nil {
-		t.Fatalf("RenderStillImage: %v", err)
+		t.Fatalf("RenderImage: %v", err)
 	}
 	if gw != w || gh != h {
 		t.Fatalf("dimensions = %dx%d, want %dx%d", gw, gh, w, h)
-	}
-	if stride != w*4 {
-		t.Fatalf("stride = %d, want %d", stride, w*4)
 	}
 	if len(rgba) != w*h*4 {
 		t.Fatalf("rgba len = %d, want %d", len(rgba), w*h*4)
@@ -82,10 +84,10 @@ func TestRenderStillImageBackgroundColor(t *testing.T) {
 	}
 }
 
-// TestRenderStillImageInto exercises the buffer-reuse path: pre-allocate
+// TestRenderImageInto exercises the buffer-reuse path: pre-allocate
 // once, render twice, assert both renders fill the same buffer with
 // matching bytes (since the style and camera are unchanged).
-func TestRenderStillImageInto(t *testing.T) {
+func TestRenderImageInto(t *testing.T) {
 	rt := newTestRuntime(t)
 	const w, h = 32, 32
 	m, err := rt.NewMap(MapOptions{Width: w, Height: h, ScaleFactor: 1})
@@ -97,7 +99,9 @@ func TestRenderStillImageInto(t *testing.T) {
 	if err := m.SetStyleJSON(yellowBackgroundStyle); err != nil {
 		t.Fatalf("SetStyleJSON: %v", err)
 	}
-	if _, err := m.WaitForEvent(2*time.Second, func(e Event) bool {
+	loadCtx, loadCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer loadCancel()
+	if _, err := m.WaitForEvent(loadCtx, func(e Event) bool {
 		return e.Type == EventStyleLoaded || e.Type == EventMapLoadingFailed
 	}); err != nil {
 		t.Fatalf("waiting for STYLE_LOADED: %v", err)
@@ -114,20 +118,24 @@ func TestRenderStillImageInto(t *testing.T) {
 	t.Cleanup(func() { _ = sess.Close() })
 
 	buf := make([]byte, w*h*4)
-	gw, gh, stride, err := m.RenderStillImageInto(sess, 5*time.Second, buf)
+	render1Ctx, render1Cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer render1Cancel()
+	gw, gh, err := m.RenderImageInto(render1Ctx, sess, buf)
 	if err != nil {
-		t.Fatalf("first RenderStillImageInto: %v", err)
+		t.Fatalf("first RenderImageInto: %v", err)
 	}
-	if gw != w || gh != h || stride != w*4 {
-		t.Fatalf("got %dx%d stride=%d", gw, gh, stride)
+	if gw != w || gh != h {
+		t.Fatalf("got %dx%d", gw, gh)
 	}
 	first := append([]byte(nil), buf...)
 
-	gw2, gh2, stride2, err := m.RenderStillImageInto(sess, 5*time.Second, buf)
+	render2Ctx, render2Cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer render2Cancel()
+	gw2, gh2, err := m.RenderImageInto(render2Ctx, sess, buf)
 	if err != nil {
-		t.Fatalf("second RenderStillImageInto: %v", err)
+		t.Fatalf("second RenderImageInto: %v", err)
 	}
-	if gw2 != gw || gh2 != gh || stride2 != stride {
+	if gw2 != gw || gh2 != gh {
 		t.Fatalf("dimensions changed between renders: %dx%d -> %dx%d", gw, gh, gw2, gh2)
 	}
 
@@ -139,8 +147,8 @@ func TestRenderStillImageInto(t *testing.T) {
 	}
 }
 
-// TestRenderStillImageIntoTooSmall verifies the size check.
-func TestRenderStillImageIntoTooSmall(t *testing.T) {
+// TestRenderImageIntoTooSmall verifies the size check.
+func TestRenderImageIntoTooSmall(t *testing.T) {
 	rt := newTestRuntime(t)
 	m, err := rt.NewMap(MapOptions{Width: 32, Height: 32, ScaleFactor: 1})
 	if err != nil {
@@ -151,7 +159,9 @@ func TestRenderStillImageIntoTooSmall(t *testing.T) {
 	if err := m.SetStyleJSON(yellowBackgroundStyle); err != nil {
 		t.Fatalf("SetStyleJSON: %v", err)
 	}
-	if _, err := m.WaitForEvent(2*time.Second, func(e Event) bool {
+	loadCtx, loadCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer loadCancel()
+	if _, err := m.WaitForEvent(loadCtx, func(e Event) bool {
 		return e.Type == EventStyleLoaded || e.Type == EventMapLoadingFailed
 	}); err != nil {
 		t.Fatalf("waiting for STYLE_LOADED: %v", err)
@@ -167,8 +177,10 @@ func TestRenderStillImageIntoTooSmall(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sess.Close() })
 
+	renderCtx, renderCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer renderCancel()
 	tooSmall := make([]byte, 100)
-	_, _, _, err = m.RenderStillImageInto(sess, 5*time.Second, tooSmall)
+	_, _, err = m.RenderImageInto(renderCtx, sess, tooSmall)
 	if err == nil {
 		t.Fatal("expected error for undersized dst, got nil")
 	}
