@@ -173,34 +173,42 @@ func (r *Runtime) PollEvent() (Event, bool, error) {
 	var out Event
 	var has bool
 	err := r.runOnOwner("Runtime.PollEvent", func() error {
-		if r.ptr == nil {
-			return errClosed("Runtime.PollEvent", "runtime")
-		}
-		var cev C.mln_runtime_event
-		cev.size = C.uint32_t(unsafe.Sizeof(cev))
-		var hasEvent C.bool
-		if status := C.mln_runtime_poll_event(r.ptr, &cev, &hasEvent); status != C.MLN_STATUS_OK {
-			return statusError("mln_runtime_poll_event", status)
-		}
-		has = bool(hasEvent)
-		if !has {
-			return nil
-		}
-		out.Type = EventType(cev._type)
-		out.Code = int32(cev.code)
-		if cev.message != nil && cev.message_size > 0 {
-			out.Message = C.GoStringN((*C.char)(unsafe.Pointer(cev.message)), C.int(cev.message_size))
-		}
-		if cev.source_type == C.MLN_RUNTIME_EVENT_SOURCE_MAP && cev.source != nil {
-			out.Source = r.maps[uintptr(cev.source)]
-		}
-		// Decode the borrowed payload before the next poll
-		// invalidates it. decodePayload copies all variable-length
-		// data (image_id, source_id) into Go strings.
-		out.Payload = decodePayload(uint32(cev.payload_type), unsafe.Pointer(cev.payload), cev.payload_size)
-		return nil
+		var pErr error
+		out, has, pErr = r.pollEventLocked()
+		return pErr
 	})
 	return out, has, err
+}
+
+// pollEventLocked runs mln_runtime_poll_event and decodes the result.
+// MUST be called from inside the dispatcher (i.e. from a runOnOwner
+// closure). Used by the batched render-still / wait-for-event paths
+// to avoid one dispatcher hop per drained event.
+func (r *Runtime) pollEventLocked() (Event, bool, error) {
+	if r.ptr == nil {
+		return Event{}, false, errClosed("Runtime.PollEvent", "runtime")
+	}
+	var cev C.mln_runtime_event
+	cev.size = C.uint32_t(unsafe.Sizeof(cev))
+	var hasEvent C.bool
+	if status := C.mln_runtime_poll_event(r.ptr, &cev, &hasEvent); status != C.MLN_STATUS_OK {
+		return Event{}, false, statusError("mln_runtime_poll_event", status)
+	}
+	if !bool(hasEvent) {
+		return Event{}, false, nil
+	}
+	var out Event
+	out.Type = EventType(cev._type)
+	out.Code = int32(cev.code)
+	if cev.message != nil && cev.message_size > 0 {
+		out.Message = C.GoStringN((*C.char)(unsafe.Pointer(cev.message)), C.int(cev.message_size))
+	}
+	if cev.source_type == C.MLN_RUNTIME_EVENT_SOURCE_MAP && cev.source != nil {
+		out.Source = r.maps[uintptr(cev.source)]
+	}
+	// Decode the borrowed payload before the next poll invalidates it.
+	out.Payload = decodePayload(uint32(cev.payload_type), unsafe.Pointer(cev.payload), cev.payload_size)
+	return out, true, nil
 }
 
 // WaitForEvent polls runtime events until match returns true, ctx is
@@ -218,19 +226,18 @@ func (r *Runtime) WaitForEvent(ctx context.Context, match func(Event) bool) (Eve
 	timer := time.NewTimer(pollInterval)
 	defer timer.Stop()
 	for {
-		ev, has, err := r.PollEvent()
+		ev, found, productive, err := r.pumpAndMatch(match)
 		if err != nil {
 			return Event{}, err
 		}
-		if has && match(ev) {
+		if found {
 			return ev, nil
 		}
-		// Reset the timer for the next poll. Per docs, drain the
-		// channel first if Stop returns false (a fire is already
-		// queued); the previous iteration consumed the value below
-		// so on the first iteration we are coming from NewTimer
-		// (running) and on subsequent iterations the channel has
-		// been drained.
+		if productive {
+			// We did real work this iteration but no match yet;
+			// pump again immediately rather than wait.
+			continue
+		}
 		select {
 		case <-ctx.Done():
 			return Event{}, fmt.Errorf("%w: %w", ErrTimeout, ctx.Err())
@@ -238,6 +245,43 @@ func (r *Runtime) WaitForEvent(ctx context.Context, match func(Event) bool) (Eve
 			timer.Reset(pollInterval)
 		}
 	}
+}
+
+// pumpAndMatch runs ONE dispatcher op that pumps mbgl via
+// mln_runtime_run_once and then drains every queued event, calling
+// match on each. Returns the first matching event (found=true) or
+// idle (found=false). productive indicates whether the pump or drain
+// did real work — when productive is true, callers should re-invoke
+// immediately rather than wait, since more progress is likely.
+//
+// match is invoked on the runtime's owner thread inside the
+// dispatcher. It MUST be a pure predicate — calling back into any
+// Map / Runtime / Session method from match deadlocks the dispatcher.
+func (r *Runtime) pumpAndMatch(match func(Event) bool) (matched Event, found, productive bool, err error) {
+	derr := r.runOnOwner("Runtime.pumpAndMatch", func() error {
+		if r.ptr == nil {
+			return errClosed("Runtime.pumpAndMatch", "runtime")
+		}
+		if status := C.mln_runtime_run_once(r.ptr); status != C.MLN_STATUS_OK {
+			return statusError("mln_runtime_run_once", status)
+		}
+		for {
+			ev, has, perr := r.pollEventLocked()
+			if perr != nil {
+				return perr
+			}
+			if !has {
+				return nil
+			}
+			productive = true
+			if match(ev) {
+				matched = ev
+				found = true
+				return nil
+			}
+		}
+	})
+	return matched, found, productive, derr
 }
 
 // registerMap is called by NewMap on the dispatcher thread to record a

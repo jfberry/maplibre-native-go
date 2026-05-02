@@ -89,12 +89,19 @@ func TestURLTransformRewritesStyleSource(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	// We don't care about the outcome — only whether the transform was
-	// asked to rewrite the source URL during style load.
-	_, _ = m.WaitForEvent(ctx, EventOfTypes(EventStyleLoaded, EventMapLoadingFailed))
-
+	// STYLE_LOADED fires as soon as mbgl has parsed the style; the
+	// source-URL fetch (and therefore the transform call) happens on a
+	// worker thread after that. Poll the counter until it ticks or the
+	// deadline expires.
+	if _, err := m.WaitForEvent(ctx, EventOfTypes(EventStyleLoaded, EventMapLoadingFailed)); err != nil {
+		t.Fatalf("WaitForEvent: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for atomic.LoadInt64(&seenOriginal) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if atomic.LoadInt64(&seenOriginal) == 0 {
-		t.Fatal("transform was not invoked for the original source URL")
+		t.Fatal("transform was not invoked for the original source URL within deadline")
 	}
 	t.Logf("transform saw original=%d rewrite=%d", seenOriginal, seenRewrite)
 }

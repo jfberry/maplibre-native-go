@@ -8,7 +8,6 @@ import "C"
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -223,7 +222,10 @@ func (m *Map) RenderStill(ctx context.Context, sess *TextureSession) (TextureFra
 // requestStillAndWait dispatches mln_map_request_still_image and pumps
 // the runtime event queue until STILL_IMAGE_FINISHED, STILL_IMAGE_FAILED,
 // MAP_LOADING_FAILED, or RENDER_ERROR is observed for this map.
-// Render-update events are forwarded into sess.RenderUpdate.
+// Render-update events are serviced inline (sess.RenderUpdate is called
+// from within the same dispatcher op that drained the event), so the
+// whole render path needs at most a handful of dispatcher hops in
+// total — request, then one pumpAndPoll per ~100µs of wall time.
 //
 // On a clean STILL_IMAGE_FINISHED returns nil. On any failure-side event
 // returns *Error{Status: StatusNativeError}. On context expiry returns
@@ -255,35 +257,75 @@ func (m *Map) requestStillAndWait(ctx context.Context, sess *TextureSession) err
 	timer := time.NewTimer(pollInterval)
 	defer timer.Stop()
 	for {
-		ev, has, err := m.rt.PollEvent()
+		ev, found, productive, err := m.pumpAndPollForRender(sess)
 		if err != nil {
 			return err
 		}
-		if !has {
-			select {
-			case <-ctx.Done():
-				return fmt.Errorf("%w: %w", ErrTimeout, ctx.Err())
-			case <-timer.C:
-				timer.Reset(pollInterval)
-				continue
+		if found {
+			if ev.Type == EventStillImageFinished {
+				return nil
 			}
-		}
-		if ev.Source != m {
-			continue
-		}
-		switch ev.Type {
-		case EventRenderUpdateAvailable:
-			if err := sess.RenderUpdate(); err != nil {
-				if errors.Is(err, ErrInvalidState) {
-					// Renderer caught up between event and call.
-					continue
-				}
-				return err
-			}
-		case EventStillImageFinished:
-			return nil
-		case EventStillImageFailed, EventMapLoadingFailed, EventRenderError:
 			return eventErr("Map.RenderStill", ev)
 		}
+		if productive {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w: %w", ErrTimeout, ctx.Err())
+		case <-timer.C:
+			timer.Reset(pollInterval)
+		}
 	}
+}
+
+// pumpAndPollForRender runs ONE dispatcher op that pumps mbgl via
+// mln_runtime_run_once and then drains the queued events, servicing
+// any RENDER_UPDATE_AVAILABLE for sess inline (so render_update runs
+// without an extra dispatcher hop).
+//
+// Returns the first terminal render event (STILL_IMAGE_FINISHED,
+// STILL_IMAGE_FAILED, MAP_LOADING_FAILED, RENDER_ERROR) for m as
+// found=true. productive indicates whether the pump or drain did real
+// work — caller should re-invoke immediately rather than back off.
+func (m *Map) pumpAndPollForRender(sess *TextureSession) (matched Event, found, productive bool, err error) {
+	derr := m.rt.runOnOwner("Map.pumpAndPollForRender", func() error {
+		if m.rt.ptr == nil {
+			return errClosed("Map.RenderStill", "runtime")
+		}
+		if status := C.mln_runtime_run_once(m.rt.ptr); status != C.MLN_STATUS_OK {
+			return statusError("mln_runtime_run_once", status)
+		}
+		for {
+			ev, has, perr := m.rt.pollEventLocked()
+			if perr != nil {
+				return perr
+			}
+			if !has {
+				return nil
+			}
+			productive = true
+			if ev.Source != m {
+				continue
+			}
+			switch ev.Type {
+			case EventRenderUpdateAvailable:
+				if sess.ptr == nil {
+					return errClosed("Map.RenderStill", "session")
+				}
+				status := C.mln_texture_render_update(sess.ptr)
+				if status != C.MLN_STATUS_OK && status != C.MLN_STATUS_INVALID_STATE {
+					return statusError("mln_texture_render_update", status)
+				}
+				// MLN_STATUS_INVALID_STATE means the renderer
+				// caught up between the event and the call —
+				// keep draining.
+			case EventStillImageFinished, EventStillImageFailed, EventMapLoadingFailed, EventRenderError:
+				matched = ev
+				found = true
+				return nil
+			}
+		}
+	})
+	return matched, found, productive, derr
 }
