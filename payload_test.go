@@ -76,8 +76,9 @@ func TestPayloadStyleImageMissing(t *testing.T) {
 		t.Fatalf("waiting for STYLE_LOADED: %v", err)
 	}
 
-	// Trigger a render to provoke the symbol layer. Use AttachTexture
-	// + RenderStill so we don't depend on a backend-specific helper.
+	// Trigger a render to provoke the symbol layer. Agnostic AttachTexture
+	// + RenderImage drives the readback path; we don't need GPU handles
+	// here, just to force the symbol layer to be evaluated.
 	sess, err := m.AttachTexture(64, 64, 1)
 	if err != nil {
 		var mlnErr *Error
@@ -90,11 +91,9 @@ func TestPayloadStyleImageMissing(t *testing.T) {
 
 	renderCtx, renderCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer renderCancel()
-	frame, err := m.RenderStill(renderCtx, sess)
-	if err != nil {
-		t.Fatalf("RenderStill: %v", err)
+	if _, _, _, err := m.RenderImage(renderCtx, sess); err != nil {
+		t.Fatalf("RenderImage: %v", err)
 	}
-	_ = sess.ReleaseFrame(frame)
 
 	// Drain the runtime's event queue and look for a STYLE_IMAGE_MISSING.
 	deadline := time.Now().Add(2 * time.Second)

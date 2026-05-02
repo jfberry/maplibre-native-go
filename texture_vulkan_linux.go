@@ -22,20 +22,10 @@ typedef struct mln_go_vulkan_context {
 extern int  mln_go_vulkan_context_create(mln_go_vulkan_context *out,
                                          char *err_out, size_t err_len);
 extern void mln_go_vulkan_context_destroy(mln_go_vulkan_context *ctx);
-
-// Implemented in vulkan_readback_linux.c.
-extern int mln_go_vulkan_readback(
-    void *instance, void *physical_device, void *device, void *queue,
-    uint32_t queue_family_index,
-    void *image, uint32_t image_layout,
-    uint32_t width, uint32_t height,
-    uint8_t *out_rgba, size_t out_capacity,
-    char *err_out, size_t err_len);
 */
 import "C"
 
 import (
-	"fmt"
 	"unsafe"
 )
 
@@ -50,15 +40,15 @@ type VulkanContext struct {
 	GraphicsQueueFamily uint32
 }
 
-// AttachVulkanTexture creates a Vulkan texture session bound to the map.
-// Spins up a default Vulkan context internally — the first physical device
-// with a graphics queue family, no extensions, no surfaces. On a host with
-// only Mesa lavapipe installed this picks lavapipe; on a host with a real
-// GPU it picks that.
+// AttachVulkanTexture creates a session-owned Vulkan offscreen texture
+// bound to the map. Spins up a default Vulkan context internally — the
+// first physical device with a graphics queue family, no extensions, no
+// surfaces. On a host with only Mesa lavapipe installed this picks
+// lavapipe; on a host with a real GPU it picks that.
 //
-// The returned session owns the internally-created context and tears it down
-// on Close. Use AttachVulkanTextureWithContext to share with an existing
-// Vulkan stack.
+// The returned session owns the internally-created context and tears it
+// down on Close. Use AttachVulkanTextureWithContext to share with an
+// existing Vulkan stack.
 func (m *Map) AttachVulkanTexture(width, height uint32, scaleFactor float64) (*TextureSession, error) {
 	if m == nil {
 		return nil, errClosed("Map.AttachVulkanTexture", "map")
@@ -91,9 +81,10 @@ func (m *Map) AttachVulkanTexture(width, height uint32, scaleFactor float64) (*T
 	return s, nil
 }
 
-// AttachVulkanTextureWithContext creates a Vulkan texture session using a
-// caller-provided Vulkan context. The handles must remain valid for the
-// session lifetime; teardown of the context is the caller's responsibility.
+// AttachVulkanTextureWithContext creates a session-owned Vulkan texture
+// session using a caller-provided Vulkan context. The handles must
+// remain valid for the session lifetime; teardown of the context is the
+// caller's responsibility.
 func (m *Map) AttachVulkanTextureWithContext(ctx VulkanContext, width, height uint32, scaleFactor float64) (*TextureSession, error) {
 	if m == nil {
 		return nil, errClosed("Map.AttachVulkanTextureWithContext", "map")
@@ -115,7 +106,7 @@ func (m *Map) AttachVulkanTextureWithContext(ctx VulkanContext, width, height ui
 		if m.ptr == nil {
 			return errClosed("Map.AttachVulkanTextureWithContext", "map")
 		}
-		desc := C.mln_vulkan_texture_descriptor_default()
+		desc := C.mln_vulkan_owned_texture_descriptor_default()
 		desc.width = C.uint32_t(width)
 		desc.height = C.uint32_t(height)
 		desc.scale_factor = C.double(scaleFactor)
@@ -126,8 +117,8 @@ func (m *Map) AttachVulkanTextureWithContext(ctx VulkanContext, width, height ui
 		desc.graphics_queue_family_index = C.uint32_t(ctx.GraphicsQueueFamily)
 
 		var out *C.mln_texture_session
-		if status := C.mln_vulkan_texture_attach(m.ptr, &desc, &out); status != C.MLN_STATUS_OK {
-			return statusError("mln_vulkan_texture_attach", status)
+		if status := C.mln_vulkan_owned_texture_attach(m.ptr, &desc, &out); status != C.MLN_STATUS_OK {
+			return statusError("mln_vulkan_owned_texture_attach", status)
 		}
 		s.ptr = out
 		return nil
@@ -135,16 +126,14 @@ func (m *Map) AttachVulkanTextureWithContext(ctx VulkanContext, width, height ui
 	if err != nil {
 		return nil, err
 	}
-	// Stash the context so readbackFrame can find the queue/queue-family/
-	// physical device that aren't carried in TextureFrame.
-	data := &vulkanSessionData{ctx: ctx}
-	s.backend = unsafe.Pointer(data)
 	trackForLeak(s, "TextureSession (Vulkan)", func() bool { return s.ptr != nil })
 	return s, nil
 }
 
-// AcquireFrame borrows the most recently rendered Vulkan frame. The returned
-// VkImage / VkImageView are valid only until ReleaseFrame is called.
+// AcquireFrame borrows the most recently rendered Vulkan frame. The
+// returned VkImage / VkImageView are valid only until ReleaseFrame is
+// called. Most callers want RenderImage / RenderImageInto, which use
+// the native readback and never expose this handle.
 func (s *TextureSession) AcquireFrame() (TextureFrame, error) {
 	if s == nil {
 		return TextureFrame{}, errClosed("TextureSession.AcquireFrame", "session")
@@ -154,10 +143,10 @@ func (s *TextureSession) AcquireFrame() (TextureFrame, error) {
 		if s.ptr == nil {
 			return errClosed("TextureSession.AcquireFrame", "session")
 		}
-		var frame C.mln_vulkan_texture_frame
+		var frame C.mln_vulkan_owned_texture_frame
 		frame.size = C.uint32_t(unsafe.Sizeof(frame))
-		if status := C.mln_vulkan_texture_acquire_frame(s.ptr, &frame); status != C.MLN_STATUS_OK {
-			return statusError("mln_vulkan_texture_acquire_frame", status)
+		if status := C.mln_vulkan_owned_texture_acquire_frame(s.ptr, &frame); status != C.MLN_STATUS_OK {
+			return statusError("mln_vulkan_owned_texture_acquire_frame", status)
 		}
 		out = TextureFrame{
 			Generation:  uint64(frame.generation),
@@ -176,80 +165,6 @@ func (s *TextureSession) AcquireFrame() (TextureFrame, error) {
 	return out, err
 }
 
-// vulkanSessionData is held off-band via TextureSession.backend so
-// readbackFrame can find the Vulkan handles it needs (the frame only
-// carries VkImage and VkDevice; readback also needs the VkQueue + queue
-// family + VkPhysicalDevice).
-type vulkanSessionData struct {
-	ctx VulkanContext
-}
-
-func sessionVulkanContext(s *TextureSession) (VulkanContext, bool) {
-	if s == nil || s.backend == nil {
-		return VulkanContext{}, false
-	}
-	return (*vulkanSessionData)(s.backend).ctx, true
-}
-
-// readbackFrame copies the GPU contents of a Vulkan frame into dst as
-// tightly-packed premultiplied RGBA. Adapts the
-// vkCmdCopyImageToBuffer pattern from mbgl::vulkan::Texture2D::readImage.
-func readbackFrame(s *TextureSession, f TextureFrame, dst []byte) error {
-	if f.Texture == nil {
-		return &Error{
-			Status:  StatusInvalidArgument,
-			Op:      "readbackFrame",
-			Message: "frame VkImage is nil",
-		}
-	}
-	needed := int(f.Width) * int(f.Height) * 4
-	if len(dst) < needed {
-		return &Error{
-			Status:  StatusInvalidArgument,
-			Op:      "readbackFrame",
-			Message: fmt.Sprintf("dst length %d < needed %d", len(dst), needed),
-		}
-	}
-	ctx, ok := sessionVulkanContext(s)
-	if !ok {
-		return &Error{
-			Status:  StatusInvalidState,
-			Op:      "readbackFrame",
-			Message: "session has no Vulkan context",
-		}
-	}
-
-	var errBuf [256]C.char
-	var rc C.int
-	if dErr := s.m.rt.runOnOwner("readbackFrame", func() error {
-		rc = C.mln_go_vulkan_readback(
-			ctx.Instance,
-			ctx.PhysicalDevice,
-			ctx.Device,
-			ctx.GraphicsQueue,
-			C.uint32_t(ctx.GraphicsQueueFamily),
-			f.Texture,
-			C.uint32_t(f.Layout),
-			C.uint32_t(f.Width),
-			C.uint32_t(f.Height),
-			(*C.uint8_t)(unsafe.Pointer(&dst[0])),
-			C.size_t(len(dst)),
-			&errBuf[0], C.size_t(len(errBuf)),
-		)
-		return nil
-	}); dErr != nil {
-		return dErr
-	}
-	if rc != 0 {
-		return &Error{
-			Status:  StatusNativeError,
-			Op:      "mln_go_vulkan_readback",
-			Message: C.GoString(&errBuf[0]),
-		}
-	}
-	return nil
-}
-
 // ReleaseFrame returns ownership of a previously acquired Vulkan frame.
 func (s *TextureSession) ReleaseFrame(f TextureFrame) error {
 	if s == nil {
@@ -259,7 +174,7 @@ func (s *TextureSession) ReleaseFrame(f TextureFrame) error {
 		if s.ptr == nil {
 			return errClosed("TextureSession.ReleaseFrame", "session")
 		}
-		var frame C.mln_vulkan_texture_frame
+		var frame C.mln_vulkan_owned_texture_frame
 		frame.size = C.uint32_t(unsafe.Sizeof(frame))
 		frame.generation = C.uint64_t(f.Generation)
 		frame.width = C.uint32_t(f.Width)
@@ -271,8 +186,8 @@ func (s *TextureSession) ReleaseFrame(f TextureFrame) error {
 		frame.device = f.Device
 		frame.format = C.uint32_t(f.PixelFormat)
 		frame.layout = C.uint32_t(f.Layout)
-		if status := C.mln_vulkan_texture_release_frame(s.ptr, &frame); status != C.MLN_STATUS_OK {
-			return statusError("mln_vulkan_texture_release_frame", status)
+		if status := C.mln_vulkan_owned_texture_release_frame(s.ptr, &frame); status != C.MLN_STATUS_OK {
+			return statusError("mln_vulkan_owned_texture_release_frame", status)
 		}
 		return nil
 	})

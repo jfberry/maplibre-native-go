@@ -208,17 +208,35 @@ func (m *Map) WaitForEvent(ctx context.Context, match func(Event) bool) (Event, 
 // fires STILL_IMAGE_FINISHED (or STILL_IMAGE_FAILED).
 //
 // The caller owns the returned frame and must call sess.ReleaseFrame on
-// it before the next render or destroy.
+// it before the next render or destroy. Most callers want
+// RenderImage / RenderImageInto, which use the native readback path
+// and never expose the GPU handles.
 //
 // Cancellation: returns ctx.Err() wrapped in ErrTimeout when ctx is done.
 func (m *Map) RenderStill(ctx context.Context, sess *TextureSession) (TextureFrame, error) {
+	if err := m.requestStillAndWait(ctx, sess); err != nil {
+		return TextureFrame{}, err
+	}
+	return sess.AcquireFrame()
+}
+
+// requestStillAndWait dispatches mln_map_request_still_image and pumps
+// the runtime event queue until STILL_IMAGE_FINISHED, STILL_IMAGE_FAILED,
+// MAP_LOADING_FAILED, or RENDER_ERROR is observed for this map.
+// Render-update events are forwarded into sess.RenderUpdate.
+//
+// On a clean STILL_IMAGE_FINISHED returns nil. On any failure-side event
+// returns *Error{Status: StatusNativeError}. On context expiry returns
+// ErrTimeout wrapping ctx.Err(). Does NOT acquire the frame; the caller
+// chooses between AcquireFrame (RenderStill) and the native readback
+// path (RenderImage / RenderImageInto).
+func (m *Map) requestStillAndWait(ctx context.Context, sess *TextureSession) error {
 	if m == nil {
-		return TextureFrame{}, errClosed("Map.RenderStill", "map")
+		return errClosed("Map.RenderStill", "map")
 	}
 	if sess == nil {
-		return TextureFrame{}, errClosed("Map.RenderStill", "session")
+		return errClosed("Map.RenderStill", "session")
 	}
-
 	if err := m.rt.runOnOwner("Map.RenderStill", func() error {
 		if m.ptr == nil {
 			return errClosed("Map.RenderStill", "map")
@@ -231,7 +249,7 @@ func (m *Map) RenderStill(ctx context.Context, sess *TextureSession) (TextureFra
 		}
 		return nil
 	}); err != nil {
-		return TextureFrame{}, err
+		return err
 	}
 
 	timer := time.NewTimer(pollInterval)
@@ -239,12 +257,12 @@ func (m *Map) RenderStill(ctx context.Context, sess *TextureSession) (TextureFra
 	for {
 		ev, has, err := m.rt.PollEvent()
 		if err != nil {
-			return TextureFrame{}, err
+			return err
 		}
 		if !has {
 			select {
 			case <-ctx.Done():
-				return TextureFrame{}, fmt.Errorf("%w: %w", ErrTimeout, ctx.Err())
+				return fmt.Errorf("%w: %w", ErrTimeout, ctx.Err())
 			case <-timer.C:
 				timer.Reset(pollInterval)
 				continue
@@ -260,12 +278,12 @@ func (m *Map) RenderStill(ctx context.Context, sess *TextureSession) (TextureFra
 					// Renderer caught up between event and call.
 					continue
 				}
-				return TextureFrame{}, err
+				return err
 			}
 		case EventStillImageFinished:
-			return sess.AcquireFrame()
+			return nil
 		case EventStillImageFailed, EventMapLoadingFailed, EventRenderError:
-			return TextureFrame{}, eventErr("Map.RenderStill", ev)
+			return eventErr("Map.RenderStill", ev)
 		}
 	}
 }
