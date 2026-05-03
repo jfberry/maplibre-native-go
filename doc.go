@@ -31,7 +31,7 @@
 //	// rgba is w*h*4 bytes of premultiplied RGBA, top-left origin.
 //
 // Session bundles the three handles you almost always want together:
-// Runtime, Map, TextureSession. Use it whenever you don't need
+// Runtime, Map, RenderSession. Use it whenever you don't need
 // finer-grained control. For multiple concurrent render workers, see
 // examples/pool — one Session per OS thread.
 //
@@ -47,13 +47,13 @@
 //     parallelism comes from spawning multiple Runtimes since each is
 //     pinned to a single OS thread.
 //
-//   - TextureSession attaches a backend-specific render target (Metal
+//   - RenderSession attaches a backend-specific render target (Metal
 //     on darwin, Vulkan on linux) to a Map. Resize is supported in
 //     place. Use Map.AttachTexture for the platform default, or
 //     AttachMetalTexture / AttachVulkanTexture for explicit backend
 //     choice and device injection.
 //
-//   - Session is a high-level bundle of Runtime + Map + TextureSession.
+//   - Session is a high-level bundle of Runtime + Map + RenderSession.
 //     NewSession blocks until the style is loaded, in-place SetStyle
 //     swaps reuse the same handles, and Render / RenderInto return
 //     RGBA bytes directly.
@@ -122,7 +122,7 @@
 // # Build tags
 //
 //   - mln_debug — installs runtime finalizers on Runtime, Map,
-//     TextureSession, Session, and Projection that print a warning
+//     RenderSession, Session, and Projection that print a warning
 //     to stderr if the resource was garbage-collected without a
 //     prior Close. Off by default; use during development.
 package maplibre

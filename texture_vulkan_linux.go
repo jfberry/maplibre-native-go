@@ -31,7 +31,7 @@ import (
 
 // VulkanContext bundles the Vulkan handles maplibre-native needs to render
 // into a host-managed device. All four pointer fields must be valid Vulkan
-// handles for the lifetime of the texture session.
+// handles for the lifetime of the render session.
 type VulkanContext struct {
 	Instance            unsafe.Pointer // VkInstance
 	PhysicalDevice      unsafe.Pointer // VkPhysicalDevice
@@ -49,7 +49,7 @@ type VulkanContext struct {
 // The returned session owns the internally-created context and tears it
 // down on Close. Use AttachVulkanTextureWithContext to share with an
 // existing Vulkan stack.
-func (m *Map) AttachVulkanTexture(width, height uint32, scaleFactor float64) (*TextureSession, error) {
+func (m *Map) AttachVulkanTexture(width, height uint32, scaleFactor float64) (*RenderSession, error) {
 	if m == nil {
 		return nil, errClosed("Map.AttachVulkanTexture", "map")
 	}
@@ -85,7 +85,7 @@ func (m *Map) AttachVulkanTexture(width, height uint32, scaleFactor float64) (*T
 // session using a caller-provided Vulkan context. The handles must
 // remain valid for the session lifetime; teardown of the context is the
 // caller's responsibility.
-func (m *Map) AttachVulkanTextureWithContext(ctx VulkanContext, width, height uint32, scaleFactor float64) (*TextureSession, error) {
+func (m *Map) AttachVulkanTextureWithContext(ctx VulkanContext, width, height uint32, scaleFactor float64) (*RenderSession, error) {
 	if m == nil {
 		return nil, errClosed("Map.AttachVulkanTextureWithContext", "map")
 	}
@@ -101,7 +101,7 @@ func (m *Map) AttachVulkanTextureWithContext(ctx VulkanContext, width, height ui
 		return nil, err
 	}
 
-	s := &TextureSession{m: m}
+	s := &RenderSession{m: m}
 	err := m.rt.runOnOwner("Map.AttachVulkanTextureWithContext", func() error {
 		if m.ptr == nil {
 			return errClosed("Map.AttachVulkanTextureWithContext", "map")
@@ -116,7 +116,7 @@ func (m *Map) AttachVulkanTextureWithContext(ctx VulkanContext, width, height ui
 		desc.graphics_queue = ctx.GraphicsQueue
 		desc.graphics_queue_family_index = C.uint32_t(ctx.GraphicsQueueFamily)
 
-		var out *C.mln_texture_session
+		var out *C.mln_render_session
 		if status := C.mln_vulkan_owned_texture_attach(m.ptr, &desc, &out); status != C.MLN_STATUS_OK {
 			return statusError("mln_vulkan_owned_texture_attach", status)
 		}
@@ -126,7 +126,7 @@ func (m *Map) AttachVulkanTextureWithContext(ctx VulkanContext, width, height ui
 	if err != nil {
 		return nil, err
 	}
-	trackForLeak(s, "TextureSession (Vulkan)", func() bool { return s.ptr != nil })
+	trackForLeak(s, "RenderSession (Vulkan)", func() bool { return s.ptr != nil })
 	return s, nil
 }
 
@@ -134,14 +134,14 @@ func (m *Map) AttachVulkanTextureWithContext(ctx VulkanContext, width, height ui
 // returned VkImage / VkImageView are valid only until ReleaseFrame is
 // called. Most callers want RenderImage / RenderImageInto, which use
 // the native readback and never expose this handle.
-func (s *TextureSession) AcquireFrame() (TextureFrame, error) {
+func (s *RenderSession) AcquireFrame() (TextureFrame, error) {
 	if s == nil {
-		return TextureFrame{}, errClosed("TextureSession.AcquireFrame", "session")
+		return TextureFrame{}, errClosed("RenderSession.AcquireFrame", "session")
 	}
 	var out TextureFrame
-	err := s.m.rt.runOnOwner("TextureSession.AcquireFrame", func() error {
+	err := s.m.rt.runOnOwner("RenderSession.AcquireFrame", func() error {
 		if s.ptr == nil {
-			return errClosed("TextureSession.AcquireFrame", "session")
+			return errClosed("RenderSession.AcquireFrame", "session")
 		}
 		var frame C.mln_vulkan_owned_texture_frame
 		frame.size = C.uint32_t(unsafe.Sizeof(frame))
@@ -166,13 +166,13 @@ func (s *TextureSession) AcquireFrame() (TextureFrame, error) {
 }
 
 // ReleaseFrame returns ownership of a previously acquired Vulkan frame.
-func (s *TextureSession) ReleaseFrame(f TextureFrame) error {
+func (s *RenderSession) ReleaseFrame(f TextureFrame) error {
 	if s == nil {
-		return errClosed("TextureSession.ReleaseFrame", "session")
+		return errClosed("RenderSession.ReleaseFrame", "session")
 	}
-	return s.m.rt.runOnOwner("TextureSession.ReleaseFrame", func() error {
+	return s.m.rt.runOnOwner("RenderSession.ReleaseFrame", func() error {
 		if s.ptr == nil {
-			return errClosed("TextureSession.ReleaseFrame", "session")
+			return errClosed("RenderSession.ReleaseFrame", "session")
 		}
 		var frame C.mln_vulkan_owned_texture_frame
 		frame.size = C.uint32_t(unsafe.Sizeof(frame))

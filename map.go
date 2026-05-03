@@ -24,7 +24,7 @@ type Map struct {
 // MapMode picks the rendering protocol the map will use. The zero value
 // (MapModeStatic) matches this binding's primary path: RenderStill /
 // RenderImage via request_still_image. Set Mode = MapModeContinuous to
-// drive rendering yourself via TextureSession.RenderUpdate on
+// drive rendering yourself via RenderSession.RenderUpdate on
 // MAP_RENDER_UPDATE_AVAILABLE events.
 //
 // MapMode is an opaque Go enum that does NOT mirror the underlying C
@@ -212,7 +212,7 @@ func (m *Map) WaitForEvent(ctx context.Context, match func(Event) bool) (Event, 
 // and never expose the GPU handles.
 //
 // Cancellation: returns ctx.Err() wrapped in ErrTimeout when ctx is done.
-func (m *Map) RenderStill(ctx context.Context, sess *TextureSession) (TextureFrame, error) {
+func (m *Map) RenderStill(ctx context.Context, sess *RenderSession) (TextureFrame, error) {
 	if err := m.requestStillAndWait(ctx, sess); err != nil {
 		return TextureFrame{}, err
 	}
@@ -232,7 +232,7 @@ func (m *Map) RenderStill(ctx context.Context, sess *TextureSession) (TextureFra
 // ErrTimeout wrapping ctx.Err(). Does NOT acquire the frame; the caller
 // chooses between AcquireFrame (RenderStill) and the native readback
 // path (RenderImage / RenderImageInto).
-func (m *Map) requestStillAndWait(ctx context.Context, sess *TextureSession) error {
+func (m *Map) requestStillAndWait(ctx context.Context, sess *RenderSession) error {
 	if m == nil {
 		return errClosed("Map.RenderStill", "map")
 	}
@@ -288,7 +288,7 @@ func (m *Map) requestStillAndWait(ctx context.Context, sess *TextureSession) err
 // STILL_IMAGE_FAILED, MAP_LOADING_FAILED, RENDER_ERROR) for m as
 // found=true. productive indicates whether the pump or drain did real
 // work — caller should re-invoke immediately rather than back off.
-func (m *Map) pumpAndPollForRender(sess *TextureSession) (matched Event, found, productive bool, err error) {
+func (m *Map) pumpAndPollForRender(sess *RenderSession) (matched Event, found, productive bool, err error) {
 	derr := m.rt.runOnOwner("Map.pumpAndPollForRender", func() error {
 		if m.rt.ptr == nil {
 			return errClosed("Map.RenderStill", "runtime")
@@ -313,9 +313,9 @@ func (m *Map) pumpAndPollForRender(sess *TextureSession) (matched Event, found, 
 				if sess.ptr == nil {
 					return errClosed("Map.RenderStill", "session")
 				}
-				status := C.mln_texture_render_update(sess.ptr)
+				status := C.mln_render_session_render_update(sess.ptr)
 				if status != C.MLN_STATUS_OK && status != C.MLN_STATUS_INVALID_STATE {
-					return statusError("mln_texture_render_update", status)
+					return statusError("mln_render_session_render_update", status)
 				}
 				// MLN_STATUS_INVALID_STATE means the renderer
 				// caught up between the event and the call —

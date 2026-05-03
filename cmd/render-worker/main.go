@@ -205,7 +205,7 @@ func run(stylePath, styleID string, ratio uint32, loadTimeout, frameTimeout time
 
 type worker struct {
 	m       *maplibre.Map
-	sess    *maplibre.TextureSession
+	sess    *maplibre.RenderSession
 	ratio   uint32
 	width   uint32
 	height  uint32

@@ -101,7 +101,7 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 // dispatcher has been closed, returns *Error{Status: StatusInvalidState}.
 // fn runs serialized with all other ABI calls into this runtime — it is
 // the only place where pointer fields (Runtime.ptr, Map.ptr,
-// TextureSession.ptr) may be safely read or mutated.
+// RenderSession.ptr) may be safely read or mutated.
 func (r *Runtime) runOnOwner(op string, fn func() error) error {
 	var fnErr error
 	if dErr := r.d.do(func() {

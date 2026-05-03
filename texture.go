@@ -48,16 +48,16 @@ type TextureFrame struct {
 	Layout      uint32 // Vulkan only: VkImageLayout. 0 on Metal.
 }
 
-// TextureSession wraps an mln_texture_session attached to a Map. It is
+// RenderSession wraps an mln_render_session attached to a Map. It is
 // the offscreen-render half of the C ABI's render-target sessions
 // (Surface sessions, which present to a UI surface, are a separate
 // type — not yet exposed by this binding).
 //
 // All session methods dispatch through the owning Map's Runtime;
-// callers may use TextureSession from any goroutine.
-type TextureSession struct {
+// callers may use RenderSession from any goroutine.
+type RenderSession struct {
 	m       *Map
-	ptr     *C.mln_texture_session
+	ptr     *C.mln_render_session
 	cleanup func() // called on the dispatcher after destroy succeeds
 }
 
@@ -71,14 +71,14 @@ type TextureSession struct {
 // AcquireFrame access. Use AttachMetalTexture / AttachVulkanTexture
 // when you need the rendered MTLTexture or VkImage handle, or when
 // you need to share a device with another GPU consumer.
-func (m *Map) AttachTexture(width, height uint32, scaleFactor float64) (*TextureSession, error) {
+func (m *Map) AttachTexture(width, height uint32, scaleFactor float64) (*RenderSession, error) {
 	if m == nil {
 		return nil, errClosed("Map.AttachTexture", "map")
 	}
 	if err := validateAttachDims("Map.AttachTexture", width, height, scaleFactor); err != nil {
 		return nil, err
 	}
-	s := &TextureSession{m: m}
+	s := &RenderSession{m: m}
 	err := m.rt.runOnOwner("Map.AttachTexture", func() error {
 		if m.ptr == nil {
 			return errClosed("Map.AttachTexture", "map")
@@ -87,7 +87,7 @@ func (m *Map) AttachTexture(width, height uint32, scaleFactor float64) (*Texture
 		desc.width = C.uint32_t(width)
 		desc.height = C.uint32_t(height)
 		desc.scale_factor = C.double(scaleFactor)
-		var out *C.mln_texture_session
+		var out *C.mln_render_session
 		if status := C.mln_owned_texture_attach(m.ptr, &desc, &out); status != C.MLN_STATUS_OK {
 			return statusError("mln_owned_texture_attach", status)
 		}
@@ -97,21 +97,21 @@ func (m *Map) AttachTexture(width, height uint32, scaleFactor float64) (*Texture
 	if err != nil {
 		return nil, err
 	}
-	trackForLeak(s, "TextureSession", func() bool { return s.ptr != nil })
+	trackForLeak(s, "RenderSession", func() bool { return s.ptr != nil })
 	return s, nil
 }
 
 // Resize advances the session's generation and reallocates backing storage.
-func (s *TextureSession) Resize(width, height uint32, scaleFactor float64) error {
+func (s *RenderSession) Resize(width, height uint32, scaleFactor float64) error {
 	if s == nil {
-		return errClosed("TextureSession.Resize", "session")
+		return errClosed("RenderSession.Resize", "session")
 	}
-	return s.m.rt.runOnOwner("TextureSession.Resize", func() error {
+	return s.m.rt.runOnOwner("RenderSession.Resize", func() error {
 		if s.ptr == nil {
-			return errClosed("TextureSession.Resize", "session")
+			return errClosed("RenderSession.Resize", "session")
 		}
-		if status := C.mln_texture_resize(s.ptr, C.uint32_t(width), C.uint32_t(height), C.double(scaleFactor)); status != C.MLN_STATUS_OK {
-			return statusError("mln_texture_resize", status)
+		if status := C.mln_render_session_resize(s.ptr, C.uint32_t(width), C.uint32_t(height), C.double(scaleFactor)); status != C.MLN_STATUS_OK {
+			return statusError("mln_render_session_resize", status)
 		}
 		return nil
 	})
@@ -125,16 +125,16 @@ func (s *TextureSession) Resize(width, height uint32, scaleFactor float64) error
 // the update; keep pumping events and try again. Static-mode renders go
 // through Map.RenderStill (which uses request_still_image internally
 // and never touches this path).
-func (s *TextureSession) RenderUpdate() error {
+func (s *RenderSession) RenderUpdate() error {
 	if s == nil {
-		return errClosed("TextureSession.RenderUpdate", "session")
+		return errClosed("RenderSession.RenderUpdate", "session")
 	}
-	return s.m.rt.runOnOwner("TextureSession.RenderUpdate", func() error {
+	return s.m.rt.runOnOwner("RenderSession.RenderUpdate", func() error {
 		if s.ptr == nil {
-			return errClosed("TextureSession.RenderUpdate", "session")
+			return errClosed("RenderSession.RenderUpdate", "session")
 		}
-		if status := C.mln_texture_render_update(s.ptr); status != C.MLN_STATUS_OK {
-			return statusError("mln_texture_render_update", status)
+		if status := C.mln_render_session_render_update(s.ptr); status != C.MLN_STATUS_OK {
+			return statusError("mln_render_session_render_update", status)
 		}
 		return nil
 	})
@@ -142,16 +142,16 @@ func (s *TextureSession) RenderUpdate() error {
 
 // Detach releases backend resources but keeps the session handle live for
 // destroy.
-func (s *TextureSession) Detach() error {
+func (s *RenderSession) Detach() error {
 	if s == nil {
 		return nil
 	}
-	return s.m.rt.runOnOwner("TextureSession.Detach", func() error {
+	return s.m.rt.runOnOwner("RenderSession.Detach", func() error {
 		if s.ptr == nil {
 			return nil
 		}
-		if status := C.mln_texture_detach(s.ptr); status != C.MLN_STATUS_OK {
-			return statusError("mln_texture_detach", status)
+		if status := C.mln_render_session_detach(s.ptr); status != C.MLN_STATUS_OK {
+			return statusError("mln_render_session_detach", status)
 		}
 		return nil
 	})
@@ -165,11 +165,11 @@ func (s *TextureSession) Detach() error {
 // info filled in. This helper swallows that status and returns the
 // dimensions instead. Real-call mode (dst != nil): INVALID_ARGUMENT
 // from a too-small dst surfaces to the caller as an *Error.
-func (s *TextureSession) readPremultipliedRGBA8(dst []byte) (width, height, byteLength int, err error) {
+func (s *RenderSession) readPremultipliedRGBA8(dst []byte) (width, height, byteLength int, err error) {
 	probe := len(dst) == 0
-	derr := s.m.rt.runOnOwner("TextureSession.readPremultipliedRGBA8", func() error {
+	derr := s.m.rt.runOnOwner("RenderSession.readPremultipliedRGBA8", func() error {
 		if s.ptr == nil {
-			return errClosed("TextureSession.readPremultipliedRGBA8", "session")
+			return errClosed("RenderSession.readPremultipliedRGBA8", "session")
 		}
 		var info C.mln_texture_image_info
 		info.size = C.uint32_t(unsafe.Sizeof(info))
@@ -206,7 +206,7 @@ func (s *TextureSession) readPremultipliedRGBA8(dst []byte) (width, height, byte
 //
 // Cancellation: returns ctx.Err() wrapped in ErrTimeout when ctx is done
 // before STILL_IMAGE_FINISHED arrives.
-func (m *Map) RenderImage(ctx context.Context, sess *TextureSession) (rgba []byte, width, height int, err error) {
+func (m *Map) RenderImage(ctx context.Context, sess *RenderSession) (rgba []byte, width, height int, err error) {
 	if err := m.requestStillAndWait(ctx, sess); err != nil {
 		return nil, 0, 0, err
 	}
@@ -228,9 +228,9 @@ func (m *Map) RenderImage(ctx context.Context, sess *TextureSession) (rgba []byt
 //
 // width/height aren't known until the frame is rendered, so a typical
 // caller pre-allocates a buffer sized to its known viewport (matching
-// MapOptions or TextureSession.Resize) and feeds the same slice to every
+// MapOptions or RenderSession.Resize) and feeds the same slice to every
 // render.
-func (m *Map) RenderImageInto(ctx context.Context, sess *TextureSession, dst []byte) (width, height int, err error) {
+func (m *Map) RenderImageInto(ctx context.Context, sess *RenderSession, dst []byte) (width, height int, err error) {
 	if err := m.requestStillAndWait(ctx, sess); err != nil {
 		return 0, 0, err
 	}
@@ -262,16 +262,16 @@ func UnpremultiplyRGBA(dst, src []byte) {
 
 // Close destroys the session handle. If still attached, this detaches first.
 // Idempotent.
-func (s *TextureSession) Close() error {
+func (s *RenderSession) Close() error {
 	if s == nil {
 		return nil
 	}
-	return s.m.rt.runOnOwner("TextureSession.Close", func() error {
+	return s.m.rt.runOnOwner("RenderSession.Close", func() error {
 		if s.ptr == nil {
 			return nil
 		}
-		if status := C.mln_texture_destroy(s.ptr); status != C.MLN_STATUS_OK {
-			return statusError("mln_texture_destroy", status)
+		if status := C.mln_render_session_destroy(s.ptr); status != C.MLN_STATUS_OK {
+			return statusError("mln_render_session_destroy", status)
 		}
 		s.ptr = nil
 		if s.cleanup != nil {

@@ -20,7 +20,7 @@ type SessionOptions struct {
 	Style   string
 }
 
-// Session bundles a Runtime + Map + TextureSession behind a single
+// Session bundles a Runtime + Map + RenderSession behind a single
 // handle. It is the recommended entry point for the common case of
 // "render maps from this style on a dedicated thread."
 //
@@ -35,11 +35,11 @@ type SessionOptions struct {
 type Session struct {
 	rt *Runtime
 	m  *Map
-	ts *TextureSession
+	rs *RenderSession
 }
 
 // NewSession creates a Runtime, a Map, attaches a platform-default
-// TextureSession, loads the style, and blocks until the style is
+// RenderSession, loads the style, and blocks until the style is
 // loaded (STYLE_LOADED) or the load fails (MAP_LOADING_FAILED), or ctx
 // is cancelled.
 //
@@ -72,8 +72,8 @@ func NewSession(ctx context.Context, opts SessionOptions) (*Session, error) {
 	// On any failure after this point, tear down what we built so far.
 	s := &Session{rt: rt}
 	cleanup := func() {
-		if s.ts != nil {
-			_ = s.ts.Close()
+		if s.rs != nil {
+			_ = s.rs.Close()
 		}
 		if s.m != nil {
 			_ = s.m.Close()
@@ -88,18 +88,18 @@ func NewSession(ctx context.Context, opts SessionOptions) (*Session, error) {
 	}
 	s.m = m
 
-	ts, err := m.AttachTexture(opts.Map.Width, opts.Map.Height, opts.Map.ScaleFactor)
+	rs, err := m.AttachTexture(opts.Map.Width, opts.Map.Height, opts.Map.ScaleFactor)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("NewSession: AttachTexture: %w", err)
 	}
-	s.ts = ts
+	s.rs = rs
 
 	if err := s.loadStyleAndWait(ctx, opts.Style); err != nil {
 		cleanup()
 		return nil, err
 	}
-	trackForLeak(s, "Session", func() bool { return s.rt != nil || s.m != nil || s.ts != nil })
+	trackForLeak(s, "Session", func() bool { return s.rt != nil || s.m != nil || s.rs != nil })
 	return s, nil
 }
 
@@ -111,9 +111,10 @@ func (s *Session) Map() *Map { return s.m }
 // install a log callback or read network status.
 func (s *Session) Runtime() *Runtime { return s.rt }
 
-// Texture exposes the underlying TextureSession for callers that need
-// AcquireFrame / ReleaseFrame access to GPU handles directly.
-func (s *Session) Texture() *TextureSession { return s.ts }
+// RenderSession exposes the underlying render-target session for
+// callers that need AcquireFrame / ReleaseFrame access to GPU handles
+// directly.
+func (s *Session) RenderSession() *RenderSession { return s.rs }
 
 // SetStyleURL swaps the active style by URL and blocks until the new
 // style finishes loading or fails. The Map handle is reused — this is
@@ -149,16 +150,16 @@ func (s *Session) SetStyle(ctx context.Context, style string) error {
 	return s.loadStyleAndWait(ctx, style)
 }
 
-// Resize updates the texture session and the next render's logical
+// Resize updates the render session and the next render's logical
 // dimensions. Camera state is preserved.
 func (s *Session) Resize(width, height uint32, scaleFactor float64) error {
-	if s == nil || s.ts == nil {
+	if s == nil || s.rs == nil {
 		return errClosed("Session.Resize", "session")
 	}
 	if scaleFactor <= 0 {
 		scaleFactor = 1
 	}
-	return s.ts.Resize(width, height, scaleFactor)
+	return s.rs.Resize(width, height, scaleFactor)
 }
 
 // JumpTo applies the camera and returns when the dispatcher has
@@ -177,7 +178,7 @@ func (s *Session) RenderStill(ctx context.Context) (TextureFrame, error) {
 	if s == nil || s.m == nil {
 		return TextureFrame{}, errClosed("Session.RenderStill", "session")
 	}
-	return s.m.RenderStill(ctx, s.ts)
+	return s.m.RenderStill(ctx, s.rs)
 }
 
 // Render produces an RGBA image, allocating a fresh slice. Width and
@@ -186,7 +187,7 @@ func (s *Session) Render(ctx context.Context) (rgba []byte, width, height int, e
 	if s == nil || s.m == nil {
 		return nil, 0, 0, errClosed("Session.Render", "session")
 	}
-	return s.m.RenderImage(ctx, s.ts)
+	return s.m.RenderImage(ctx, s.rs)
 }
 
 // RenderInto produces an RGBA image into dst. Returns physical width
@@ -195,21 +196,21 @@ func (s *Session) RenderInto(ctx context.Context, dst []byte) (width, height int
 	if s == nil || s.m == nil {
 		return 0, 0, errClosed("Session.RenderInto", "session")
 	}
-	return s.m.RenderImageInto(ctx, s.ts, dst)
+	return s.m.RenderImageInto(ctx, s.rs, dst)
 }
 
-// Close tears down the session in dependency order: TextureSession ->
+// Close tears down the session in dependency order: RenderSession ->
 // Map -> Runtime. Idempotent; safe on a nil Session.
 func (s *Session) Close() error {
 	if s == nil {
 		return nil
 	}
 	var firstErr error
-	if s.ts != nil {
-		if err := s.ts.Close(); err != nil && firstErr == nil {
+	if s.rs != nil {
+		if err := s.rs.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		s.ts = nil
+		s.rs = nil
 	}
 	if s.m != nil {
 		if err := s.m.Close(); err != nil && firstErr == nil {

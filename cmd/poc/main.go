@@ -96,7 +96,7 @@ func main() {
 	}
 	defer func() {
 		if err := sess.Close(); err != nil {
-			log.Printf("TextureSession.Close: %v", err)
+			log.Printf("RenderSession.Close: %v", err)
 		}
 	}()
 	log.Printf("metal texture session attached")
