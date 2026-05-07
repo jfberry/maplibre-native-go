@@ -1,0 +1,60 @@
+---
+# c-for-go PoC manifest for maplibre-native-c.
+#
+# Generates raw bindings for the entire C ABI by parsing the umbrella
+# header. Names follow the upstream `mln_` prefix; the generator strips
+# it and exports a CamelCase Go identifier.
+#
+# Scope intentionally raw: no callbacks, no idiomatic helpers. The goal
+# is to see what auto-gen produces and how usable it is on its own.
+
+GENERATOR:
+  PackageName: cforgo
+  PackageDescription: "Package cforgo is the c-for-go-generated raw binding for maplibre-native-c."
+  PackageLicense: |
+    Auto-generated from maplibre-native-c headers (BSD-2-Clause).
+    Do not edit by hand; rerun c-for-go.
+  Includes:
+    - maplibre_native_c.h
+  FlagGroups:
+    - name: CFLAGS
+      flags:
+        - -I/Users/james/GolandProjects/maplibre-native-go/experiments/cforgo/headers
+    - name: LDFLAGS
+      flags:
+        - -L/Users/james/dev/maplibre-native-ffi/build
+        - -Wl,-rpath,/Users/james/dev/maplibre-native-ffi/build
+        - -lmaplibre-native-c
+
+PARSER:
+  IncludePaths:
+    - /Users/james/GolandProjects/maplibre-native-go/experiments/cforgo/headers
+    - /usr/include
+  SourcesPaths:
+    - maplibre_native_c.h
+  Defines: {}
+
+TRANSLATOR:
+  ConstRules:
+    defines: skip
+    enum: expand
+  Rules:
+    global:
+      - {action: accept, from: "^(mln_|MLN_)"}
+      - {action: replace, from: "^(mln_|MLN_)"}
+    type:
+      - {action: replace, from: "_t$"}
+    const:
+      - {transform: lower}
+      - {load: snakecase}
+    post-global:
+      # Convert snake_case to CamelCase, then export. snake-case rules
+      # strip underscores while preserving word boundaries — without
+      # this we get mojibake like "Cameraoptionsdefault".
+      - {load: snakecase}
+      - {transform: export}
+  PtrTips:
+    function:
+      - {target: "^.*$", tips: [ref]}
+  MemTips:
+    - {target: "^(runtime|map|map_projection|render_session|resource_request_handle|json_snapshot)$", self: raw}

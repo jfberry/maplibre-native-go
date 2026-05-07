@@ -1,0 +1,3 @@
+# Don't commit cforgo binaries — they're built by `go run`.
+cforgo/example/example
+idiomatic/example/example
