@@ -332,38 +332,17 @@ when the C API supports it. If Go needs to inspect owner threads
 directly, add a C getter.
 
 A single dispatcher op may make multiple C calls to amortize the
-goroutine→OS-thread hop cost. The render-still inner loop makes one
-dispatcher op per iteration that calls `mln_runtime_run_once`,
-`mln_runtime_poll_event` (drained until empty), and
-`mln_render_session_render_update` (inline, when a RUA event is
-drained).
+goroutine-to-OS-thread hop cost. Wait operations are structured so
+that one dispatcher op pumps `mln_runtime_run_once`, drains the
+runtime's event queue, and services any render-update events
+inline. The binding pumps `run_once` at the dispatcher hop cadence
+during active waits so that event delivery is bounded by mbgl's own
+work, not by the binding's poll loop.
 
-The render wait loop pumps `mln_runtime_run_once` aggressively. Pump
-inside every dispatcher iteration; mbgl's owner-thread tasks accumulate
-between pumps and slow event delivery proportional to the gap. A 100µs
-Go-side backoff between pumps is the recommended cadence when the
-event queue is idle:
-
-```go
-timer := time.NewTimer(100 * time.Microsecond)
-defer timer.Stop()
-for {
-    ev, found, productive, err := m.pumpAndPollForRender(sess)
-    if err != nil { return err }
-    if found { return resolve(ev) }
-    if productive { continue }  // immediate retry — work was done
-    select {
-    case <-ctx.Done():
-        return fmt.Errorf("%w: %w", maplibre.ErrTimeout, ctx.Err())
-    case <-timer.C:
-        timer.Reset(100 * time.Microsecond)
-    }
-}
-```
-
-The binding uses a reusable `time.NewTimer`, not `time.After`.
-`time.After` allocates a fresh runtime timer per call and stays in
-the heap until it fires.
+The wait loop returns to Go-side control between dispatcher ops to
+honour `ctx` cancellation. When the event queue drains without a
+match, the loop yields; when the queue is producing events, the
+loop re-enters the dispatcher immediately.
 
 ## Context And Cancellation
 
@@ -706,34 +685,27 @@ mln_resource_transform_callback mlnGoGetTransformTrampoline(void) {
 }
 ```
 
-User data passes through cgo as a C-allocated cell containing a
-`cgo.Handle` value. The cell exists so the binding can hand mbgl a
-real pointer for `user_data` without violating the race detector's
-`checkptr` rule on synthesizing `unsafe.Pointer` from a uintptr-typed
-`cgo.Handle`:
+User data passes through cgo as C-allocated storage containing a
+`runtime/cgo.Handle` value. The C-allocated storage gives the
+binding a stable native address to use as `user_data`; the handle
+keeps the Go callback closure reachable across the cgo boundary.
+The trampoline reads the handle from the storage and dispatches to
+the registered Go function:
 
 ```go
-// Register a callback.
-hp := C.malloc(C.size_t(unsafe.Sizeof(uintptr(0))))
-*(*uintptr)(hp) = uintptr(cgo.NewHandle(callback))
-
-var t C.mln_resource_transform
-t.size      = C.uint32_t(unsafe.Sizeof(t))
-t.callback  = C.mlnGoGetTransformTrampoline()
-t.user_data = hp
-
 // C calls into the //export'd Go trampoline.
 //export mlnGoResourceTransformTrampoline
 func mlnGoResourceTransformTrampoline(userData unsafe.Pointer, kind C.uint32_t,
     url *C.char, out *C.mln_resource_transform_response) C.mln_status {
     h := cgo.Handle(*(*uintptr)(userData))
     cb := h.Value().(URLTransform)
-    // ... invoke cb, set out->url ...
+    // invoke cb, set out->url, return status
 }
 ```
 
-The `Runtime` owns the cell and the handle for the runtime's lifetime.
-Both are freed during `Runtime.Close()` after the C side is destroyed.
+The `Runtime` owns the storage and the handle for the runtime's
+lifetime. Both are freed during `Runtime.Close()` after the C side
+is destroyed.
 
 A single Go-registered log callback is process-global, matching the C
 API. Resource transform and provider callbacks are runtime-scoped.
