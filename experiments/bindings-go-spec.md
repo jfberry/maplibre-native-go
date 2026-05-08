@@ -248,6 +248,12 @@ defer sess.Close()
 `Close()` is callable from any goroutine. The destroy call routes through
 the dispatcher; goroutine-of-call doesn't matter to correctness.
 
+`Close()` is the single lifecycle operation. The binding does not
+expose `IsClosed()`, lifecycle-observation methods, `Close(ctx)`
+variants, or any other way to inspect or vary the destroy path.
+Callers detect closure by the error returned from the next operation
+on a closed handle (`errors.Is(err, ErrInvalidState)`).
+
 Under the `mln_debug` build tag, the binding installs
 `runtime.SetFinalizer` on each handle that prints to stderr if the
 handle is garbage-collected with the underlying native handle still
@@ -362,7 +368,14 @@ the heap until it fires.
 ## Context And Cancellation
 
 Every binding operation that waits on a C-side event takes a
-`context.Context` as its first argument:
+`context.Context` as its first parameter, following Go convention.
+Operations that issue one C call and return synchronously do not take
+a context; the cgo call is bounded by mbgl's own owner-thread cost.
+
+The binding does not expose deadline parameters (`time.Duration`),
+cancellation channels (`<-chan struct{}`), or polling-loop primitives
+in the public API. `context.Context` is the single cancellation
+primitive.
 
 ```go
 func (r *Runtime) WaitForEvent(ctx context.Context, match func(Event) bool) (Event, error)
@@ -384,14 +397,21 @@ fmt.Errorf("%w: %w", ErrTimeout, ctx.Err())
 Callers can match either `errors.Is(err, ErrTimeout)` or
 `errors.Is(err, context.DeadlineExceeded)`.
 
-Operations that issue one C call and return synchronously do not take a
-context. The cgo call is bounded by mbgl's own owner-thread cost.
-
 ## Options And Transparent Structs
 
-C option structs are Go structs with public fields. Builder methods are
-not idiomatic Go; the zero value plus literal construction is the
-expected pattern:
+C option structs are Go structs with public fields. The zero value
+plus literal construction is the only construction pattern. The
+binding does not expose:
+
+- builder methods (`opts.WithWidth(512)`, `opts.WithHeight(512)`)
+- setter methods (`opts.SetWidth(512)`)
+- immutable `with...` constructors (`opts.WithMode(MapModeStatic)`)
+- `New<Type>(...)` constructors that just fill fields a literal could
+  set directly
+
+Plain Go structs expose their exported fields. The binding does not
+add `GetWidth()` / `Width()` accessor methods on plain structs. Methods
+are reserved for behaviour that requires native dispatch.
 
 ```go
 opts := maplibre.MapOptions{
@@ -516,8 +536,16 @@ frame, err := m.RenderStill(ctx, sess)
 if err != nil { return err }
 defer sess.ReleaseFrame(frame)
 
-// frame.Texture, frame.Device, etc. are valid until ReleaseFrame.
+// frame.TextureUnsafe, frame.DeviceUnsafe, etc. are valid until
+// ReleaseFrame returns.
 ```
+
+The binding does not expose callback-scoped (`WithFrame(fn)`,
+`Use(fn)`, etc.) accessors for borrowed handles. Go's `defer` already
+gives the caller a tight, panic-safe scope without an additional
+function-call layer; introducing a parallel callback-style API for
+the same lifetime would split the binding's idiom and confuse
+consumers about which to use.
 
 Acquire and release order is enforced by the C ABI (mbgl rejects
 nested acquires, render updates, resize, detach, and destroy while a
@@ -564,7 +592,9 @@ memory.
 
 ## Events
 
-Polling returns copied Go values:
+Polling returns copied Go values. The polling signature follows Go's
+`(value, ok, error)` convention — `ok == false` means no event was
+available, `err != nil` means the call itself failed:
 
 ```go
 type Event struct {
