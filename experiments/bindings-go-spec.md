@@ -85,6 +85,7 @@ resource.go          URL transform + resource provider callbacks
 Constants are generated from the C headers. A small generator extracts
 every `MLN_*` enum value and emits typed Go constants. Generator output
 is committed to the repository and regenerated when upstream pulls.
+Treat successful generation as the header parsability check.
 
 The rest of the binding is handwritten. Public types and methods do not
 expose `unsafe.Pointer`, `*C.foo`, or any other cgo type to consumers
@@ -202,6 +203,13 @@ native arguments and native state.
 Every long-lived C-owned opaque handle maps to a Go struct with a
 `Close() error` method.
 
+A handle stores:
+
+- the native pointer
+- parent handles needed for native validity
+- open or closed state
+- optional debug leak context
+
 ```go
 type Runtime struct { /* dispatcher + ptr */ }
 func NewRuntime(opts RuntimeOptions) (*Runtime, error)
@@ -243,7 +251,9 @@ the dispatcher; goroutine-of-call doesn't matter to correctness.
 Under the `mln_debug` build tag, the binding installs
 `runtime.SetFinalizer` on each handle that prints to stderr if the
 handle is garbage-collected with the underlying native handle still
-live. The finalizer is a no-op in release builds.
+live. The finalizer reports the leak only; it does not destroy
+thread-affine native handles. The finalizer is a no-op in release
+builds.
 
 ## OS Thread Pinning And Dispatcher
 
@@ -295,6 +305,25 @@ mln_network_status_get / mln_network_status_set
 mln_projected_meters_for_lat_lng / mln_lat_lng_for_projected_meters
 mln_resource_request_complete / mln_resource_request_cancelled / mln_resource_request_release
 ```
+
+The Go layer does not duplicate owner-thread validation for ordinary
+calls. Native `MLN_STATUS_WRONG_THREAD` results become `*Error` values
+with `Status == StatusWrongThread`. Go type boundaries align with C
+owner concepts:
+
+```text
+Runtime         runtime owner thread in C
+Map             map owner thread in C
+RenderSession   session owner thread in C
+Projection      projection owner thread in C
+```
+
+Render session owner threads currently match map owner threads.
+This leaves room for a future C API that exposes render sessions
+owned by a render thread distinct from the runtime owner thread. The
+Go binding would create a separate dispatcher for such sessions
+when the C API supports it. If Go needs to inspect owner threads
+directly, add a C getter.
 
 A single dispatcher op may make multiple C calls to amortize the
 goroutine→OS-thread hop cost. The render-still inner loop makes one
@@ -444,31 +473,33 @@ Go's `unsafe.Pointer` is the public Go type for backend-native handles
 the binding does not own. It is a value, not a memory view.
 
 `unsafe.Pointer` appears in public types only where the C API itself
-exposes a borrowed backend-native handle:
+exposes a borrowed backend-native handle. Field names of borrowed
+backend handles use the `Unsafe` suffix to mark the caller-managed
+lifetime:
 
 ```go
 type TextureFrame struct {
-    Generation  uint64
-    Width       uint32
-    Height      uint32
-    ScaleFactor float64
-    FrameID     uint64
-    Texture     unsafe.Pointer  // Metal: id<MTLTexture>; Vulkan: VkImage
-    ImageView   unsafe.Pointer  // Vulkan only: VkImageView; nil on Metal
-    Device      unsafe.Pointer  // Metal: id<MTLDevice>; Vulkan: VkDevice
-    PixelFormat uint64
-    Layout      uint32
+    Generation      uint64
+    Width           uint32
+    Height          uint32
+    ScaleFactor     float64
+    FrameID         uint64
+    TextureUnsafe   unsafe.Pointer  // Metal: id<MTLTexture>; Vulkan: VkImage
+    ImageViewUnsafe unsafe.Pointer  // Vulkan only: VkImageView; nil on Metal
+    DeviceUnsafe    unsafe.Pointer  // Metal: id<MTLDevice>; Vulkan: VkDevice
+    PixelFormat     uint64
+    Layout          uint32
 }
 ```
 
-Pointer fields document the backend-native type in field comments.
 Public methods that accept an `unsafe.Pointer` as a backend handle live
-in platform-tagged build files:
+in platform-tagged build files and also use the `Unsafe` suffix on the
+parameter or function name where appropriate:
 
 ```go
 //go:build darwin
 
-func (m *Map) AttachMetalTextureWithDevice(device unsafe.Pointer,
+func (m *Map) AttachMetalTextureWithDevice(deviceUnsafe unsafe.Pointer,
     width, height uint32, scale float64) (*RenderSession, error)
 ```
 
@@ -554,6 +585,13 @@ live `*Map` wrappers keyed by C handle. The registry is dispatcher-
 local — both registration (`NewMap`) and lookup (`PollEvent`) run on
 the dispatcher thread, so no lock is required.
 
+A drain helper consumes every queued event with the same copy
+semantics as `PollEvent`:
+
+```go
+func (r *Runtime) DrainEvents(consumer func(Event) error) error
+```
+
 The binding ships convenience predicates:
 
 ```go
@@ -566,6 +604,15 @@ ev, err := m.WaitForEvent(ctx, maplibre.EventOfType(maplibre.EventStyleLoaded))
 `WaitForEvent`'s `match` predicate runs inside the dispatcher in the
 batched-poll variant. The predicate must be a pure function: calling
 back into any binding method from `match` deadlocks the dispatcher.
+
+When a map-originated event's source pointer does not resolve to a
+live `*Map` wrapper (e.g. the parent `Map` was closed concurrently),
+`Event.Source` is nil and the event still carries copied source kind
+and native identity metadata for diagnostics.
+
+The low-level binding preserves event names and payload categories
+close to the C API. Translating events into channels, listeners, or
+UI state belongs to adapters above this layer.
 
 The C runtime event includes a typed payload. The binding decodes
 the payload into a Go-typed `Payload` interface:
@@ -672,6 +719,11 @@ Callbacks catch Go panics at the trampoline boundary, log to stderr,
 and return the appropriate "no rewrite" or OK status. Panics never
 unwind through cgo.
 
+Borrowed request fields (URL bytes, headers, prior data) are copied
+to Go values before the Go callback method returns when the binding
+needs them later. The C ABI's borrowed pointers do not escape the
+callback scope.
+
 A handled resource request uses a Go object that owns the provider's
 reference to the C request handle. It enforces one-shot completion
 and exactly-once release. Completion and cancellation checks may run
@@ -717,15 +769,25 @@ func (m *Map) AttachVulkanTextureWithContext(ctx VulkanContext,
     width, height uint32, scale float64) (*RenderSession, error)
 ```
 
-The render flow uses native readback when GPU handles are not needed:
+The render flow uses native readback when GPU handles are not needed.
+Readback paths return a `TextureImageInfo` with copied metadata so
+callers can read width, height, stride, and total byte length without
+crossing cgo again:
 
 ```go
+type TextureImageInfo struct {
+    Width      int  // physical pixels
+    Height     int  // physical pixels
+    Stride     int  // bytes per row
+    ByteLength int  // total buffer size
+}
+
 // One call: request still image, pump events until STILL_IMAGE_FINISHED,
 // native readback into a fresh Go slice.
-rgba, w, h, err := m.RenderImage(ctx, sess)
+rgba, info, err := m.RenderImage(ctx, sess)
 
 // Same with caller-supplied buffer for reuse across renders.
-w, h, err := m.RenderImageInto(ctx, sess, dst)
+info, err := m.RenderImageInto(ctx, sess, dst)
 
 // GPU-handle path: attach with a backend-specific function, render, take
 // the borrowed handle, release explicitly.
@@ -741,18 +803,22 @@ lifetime documented by the C API.
 ## Unsafe Escape Hatches
 
 Backend interop requires raw native handles in specific render-target
-APIs. The Go binding uses `unsafe.Pointer` for these handles directly;
-no additional escape hatch type is needed.
-
-Field names describe the handle role and document the backend-native
-type in the field comment:
+APIs. Unsafe accessors are limited to those APIs and use an `Unsafe`
+suffix on the field or parameter name to mark caller-managed
+lifetime.
 
 ```go
 type TextureFrame struct {
-    Texture     unsafe.Pointer  // Metal: id<MTLTexture>; Vulkan: VkImage
-    Device      unsafe.Pointer  // Metal: id<MTLDevice>; Vulkan: VkDevice
+    TextureUnsafe   unsafe.Pointer  // Metal: id<MTLTexture>; Vulkan: VkImage
+    DeviceUnsafe    unsafe.Pointer  // Metal: id<MTLDevice>; Vulkan: VkDevice
+    ImageViewUnsafe unsafe.Pointer  // Vulkan only: VkImageView
 }
 ```
+
+Unsafe field documentation states the scope in which the returned
+native handle is valid (e.g. "valid until ReleaseFrame returns") and
+which backend-native type the pointer represents. Unsafe accessors
+do not transfer ownership.
 
 The binding does not expose `*C.foo` types. `unsafe.Pointer` is the
 binding's wire format for opaque handles in public API surfaces.
@@ -828,5 +894,8 @@ Callbacks       Log callback receives records under both synchronous
                 and async masks; URL transform invoked with right kind/url
 ```
 
-Add regression tests when a Go-layer invariant — dispatcher discipline,
-ctx cancellation, leak-tracker behavior — is added or changed.
+Add regression tests when the Go layer owns a lifetime or threading
+invariant that the C API cannot express on its own, such as releasing
+a texture frame after a panicking callback, preserving parent handles
+while child handles are reachable, or recovering panics inside an
+upcall trampoline without unwinding through cgo.
