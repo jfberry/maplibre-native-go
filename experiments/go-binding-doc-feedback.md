@@ -237,11 +237,7 @@ A `mln_debug` build tag installs `runtime.SetFinalizer`-based leak
 reporting on every owned handle. Off by default; release builds pay
 zero cost.
 
-The binding compiles cleanly with `-race`. cgo pointer rules
-(`runtime.Pinner` for retained Go pointers, `cgo.Handle` for callback
-state, C-owned storage for strings stored on the C side past the
-returning call) keep the package within the race detector's
-`checkptr` rules.
+The binding compiles cleanly with `-race`.
 
 ## API Shape
 
@@ -437,15 +433,40 @@ or returns an opaque backend-native handle (Metal devices and
 textures, Vulkan instances / devices / queues / images, native
 surfaces).
 
-Field names exposing borrowed backend handles use the `Unsafe`
-suffix, matching the cross-language convention:
+## Callback-Scoped Borrows
+
+Native data exposed only during a callback's lifetime uses a
+callback-scoped accessor pattern. The frame type is not freely
+returned and not publicly closable; the binding acquires before
+the callback runs and releases when it returns or panics.
+
+```go
+func (s *RenderSessionHandle) WithMetalOwnedTextureFrame(
+    fn func(*MetalOwnedTextureFrame) error,
+) error
+```
+
+The frame type stores private state and exposes its native handles
+through accessor methods that fail when the frame is no longer
+active:
 
 ```go
 type MetalOwnedTextureFrame struct {
-    TextureUnsafe NativePointer  // id<MTLTexture>
-    DeviceUnsafe  NativePointer  // id<MTLDevice>
+    // private fields
 }
+
+func (f *MetalOwnedTextureFrame) TextureUnsafe() (NativePointer, error)
+func (f *MetalOwnedTextureFrame) DeviceUnsafe()  (NativePointer, error)
 ```
+
+Accessor names carry the `Unsafe` suffix, matching the
+cross-language convention. They return `ErrInvalidState` after the
+callback scope ends.
+
+The C side rejects nested acquires, render updates, resize, detach,
+and destroy while a frame is acquired. The binding relies on those
+checks and always releases the frame in a `defer` after the
+callback returns.
 
 ## Native Memory
 
@@ -477,11 +498,13 @@ callbacks. Each is plumbed through a `//export`'d Go trampoline:
 //export mlnGoLogTrampoline
 func mlnGoLogTrampoline(userData unsafe.Pointer, severity C.uint32_t,
     event C.uint32_t, code C.int64_t, message *C.char) C.uint32_t {
-    defer recoverPanic("log callback")
+    defer func() { _ = recover() }()
     if userData == nil { return 0 }
     h := cgo.Handle(*(*uintptr)(userData))
     cb := h.Value().(LogCallback)
-    return cb(/* ... */)
+    // ... invoke cb, return status ...
+    _ = cb
+    return 0
 }
 ```
 
@@ -526,8 +549,9 @@ similar). Panics never unwind through cgo.
 
 Callbacks may run on MapLibre worker, network, logging, or render
 threads. Implementations must be thread-safe, return quickly, and
-must not call back into binding methods that themselves issue C
-calls; the cross-language doc's re-entrancy rules apply.
+must not call back into the binding. Borrowed C-side request fields
+are copied into Go values before the Go callback returns when the
+binding needs them later.
 
 A handled resource request uses a Go object that owns the provider's
 reference to the C request handle. It enforces one-shot completion
@@ -586,17 +610,24 @@ func main() {
     defer sess.Close()
 
     // Static-render flow: request, pump run_once + drain events,
-    // readback. Caller owns the loop in the low-level binding.
+    // readback. Caller owns the loop, including idle backoff
+    // (sleep, channel select, etc.) when the queue is empty.
     if err := m.RequestStillImage(); err != nil { log.Fatal(err) }
-    for {
+    for done := false; !done; {
         if err := rt.RunOnce(); err != nil { log.Fatal(err) }
-        ev, ok, err := rt.PollEvent()
-        if err != nil { log.Fatal(err) }
-        if !ok { continue }
-        if ev.Source == m && ev.Type == maplibre.EventStillImageFinished { break }
-        if ev.Type == maplibre.EventStillImageFailed ||
-           ev.Type == maplibre.EventMapLoadingFailed {
-            log.Fatalf("render failed: %v", ev)
+        for {
+            ev, ok, err := rt.PollEvent()
+            if err != nil { log.Fatal(err) }
+            if !ok { break }
+            if ev.Source != m { continue }
+            switch ev.Type {
+            case maplibre.EventStillImageFinished:
+                done = true
+            case maplibre.EventStillImageFailed,
+                 maplibre.EventMapLoadingFailed,
+                 maplibre.EventRenderError:
+                log.Fatalf("render failed: %v", ev)
+            }
         }
     }
 
@@ -608,8 +639,9 @@ func main() {
 
 Adapter packages above the binding can wrap this loop in an
 ergonomic API with `context.Context` cancellation, an internal
-dispatcher goroutine, and concurrent rendering across multiple
-runtimes. Such adapters are out of scope for the low-level binding.
+dispatcher goroutine, idle-cadence pumping, and concurrent rendering
+across multiple runtimes. Such adapters are out of scope for the
+low-level binding.
 
 ## Testing
 
