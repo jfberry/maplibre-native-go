@@ -1,160 +1,136 @@
-# Gaps In The Go Binding Conventions Doc
+# Comments On The Revised Go Binding Conventions Doc
 
-Feedback on
-[`development/bindings-go/`](https://maplibre.org/maplibre-native-ffi/development/bindings-go/)
-after a hands-on attempt to use it as the only specification source for
-producing a Go binding.
-
-The page is intentionally thin — it cross-references the language-agnostic
+Follow-up to earlier feedback on
+[`development/bindings-go/`](https://maplibre.org/maplibre-native-ffi/development/bindings-go/).
+Upstream has revised both the cross-language
 [`development/bindings/`](https://maplibre.org/maplibre-native-ffi/development/bindings/)
-page for the cross-language model and adds Go-specific decisions on top.
-The cross-language page is well-developed; the Go-specific page in its
-current form leaves a contextless implementer (human or LLM) without
-enough material to produce a buildable, working binding. This document
-lists what's missing and closes with a proposed replacement page that
-fills those gaps without changing any of upstream's design decisions
-(thin layer, no internal dispatcher, caller-driven threading).
+page and the Go-specific page in response to the previous round.
+This document summarises what was addressed, lists what is still
+outstanding for an implementer working from the docs alone, and
+closes with an updated candidate replacement page that incorporates
+upstream's new framing.
 
-The framing assumes ergonomic concerns — `context.Context` cancellation,
-internal dispatcher goroutines, render-pump loops, `Session`-style
-bundles, parallel pools — live in **adapter packages above** this
-binding, written by downstream consumers. The binding doc only needs to
-help an implementer get a thin, correct, low-level layer in place.
+## What The Revision Addresses
 
-## Issues
+Five of the original gaps are now answered by the revised pages:
+
+- **Diagnostic timing.** "Use a short `runtime.LockOSThread` window
+  to keep the C call and diagnostic read together." Tight and
+  correct.
+- **Public-surface shape.** The Go page now explicitly identifies
+  two layers: a direct handle API as the base layer, plus a small
+  opt-in owner goroutine helper that locks an OS thread, runs
+  owner-thread calls, and pumps runtime events. The cross-language
+  Owner Threads section gives this same pattern its general
+  blessing for languages whose schedulers separate logical
+  execution from native thread identity.
+- **`runtime.Pinner` usage.** "Use `runtime.Pinner` for retained
+  Go memory. Let cgo's per-call pinning cover ordinary buffers."
+- **`cgo.Handle` plumbing through `void* user_data`.** "Store
+  callback closures through `runtime/cgo.Handle` ... Use C-owned
+  storage for retained strings, buffers, and callback `user_data`
+  cells." The exact mechanism (a C-allocated cell containing the
+  handle's uintptr value, dereferenced from the trampoline) is now
+  implied by combining those two sentences.
+- **Adapter-layer relationship.** "Application scheduling and
+  framework integration stay above that helper." Direct framing.
+
+## Outstanding Items
+
+The following gaps would still leave a contextless implementer
+without enough material to produce a buildable, idiomatic Go
+binding from the docs alone.
 
 ### 1. Build setup is undocumented
 
-A buildable Go cgo package needs at minimum:
-
-- `pkg-config` integration
-- `CFLAGS` / `LDFLAGS` directives
-- `PKG_CONFIG_PATH` setup expectations for consumers
-- A way to flip leak-reporting finalizers on for development
-
-None of these are in the current page. An LLM working only from the doc
-has no way to get past the first build attempt.
+The Go page does not show how a buildable cgo package wires up
+`pkg-config: maplibre-native-c`, `CFLAGS` / `LDFLAGS`,
+`PKG_CONFIG_PATH` for consumers, or a build tag for development-time
+leak reporting.
 
 ### 2. Platform-tagged files are not described
 
 Metal-only (darwin) and Vulkan-only (linux) attach paths require Go
-build tags and platform-specific `#cgo` LDFLAGS. Without explicit
-guidance, an LLM either fails the build on whichever platform it
-forgets, or wires both paths into one file and breaks both.
+build tags and platform-specific `#cgo` directives. Without explicit
+guidance, an implementer wires both into one file and breaks both.
 
-### 3. cgo.Handle plumbing through `void* user_data` is not addressed
-
-The page says "use `runtime/cgo.Handle` for callback state." It does
-not say *how* a `cgo.Handle` (an opaque uintptr-sized integer)
-becomes mbgl's `void* user_data` parameter. The naive
-`unsafe.Pointer(uintptr(handle))` cast violates the race detector's
-`checkptr` guard. The conventional resolution — store the handle in
-a small C-allocated cell that mbgl sees as a real pointer, and have
-the trampoline dereference it — is non-obvious and Go-specific. An
-LLM hits this and fights it for a while.
-
-### 4. The cgo `//export` cast-helper file pattern is not addressed
+### 3. The cgo `//export` cast-helper file pattern is not addressed
 
 cgo's auto-generated `_cgo_export.h` declares `//export`'d Go
 functions with `char*` parameters. mbgl's typed callback function
-pointers expect `const char*`. Casting in the same Go-file `import "C"`
-preamble produces `conflicting types` errors at build time. The
-conventional resolution is a small `.c` translation unit that includes
-both `_cgo_export.h` and `maplibre_native_c.h` and exposes typed-cast
-accessors. The page does not mention this; an LLM hits the conflict
-and may misdiagnose it as a bug in the headers.
+pointers expect `const char*`. Casting in the same Go-file
+`import "C"` preamble produces `conflicting types` errors. The
+conventional resolution is a small companion `.c` translation unit
+that includes both `_cgo_export.h` and `maplibre_native_c.h` and
+exposes typed-cast accessors. This is Go-specific, non-obvious, and
+the implementer hits it hard.
 
-### 5. Diagnostic-message timing in the no-marshal model needs explicit treatment
+### 4. The `*Error` shape is not pinned
 
-`mln_thread_last_error_message()` is thread-local. Goroutines migrate
-across OS threads at the Go scheduler's discretion. With the binding's
-"no marshal" decision, the binding must read the diagnostic
-**immediately after the failing C call, in the same goroutine, before
-any operation that could yield**. The current page mentions caller
-thread responsibility for owner-thread affinity but does not extend
-that guidance to diagnostic capture, which is a different, smaller,
-more easily-overlooked window.
+The page says "Expose stable Go error categories that work with
+`errors.Is` and include the copied diagnostic message." This is the
+right idiom but does not pin the field set, the sentinel values, or
+the `Is` method. Two implementers will produce two different error
+types.
 
-### 6. Public-surface shape in the no-dispatcher model is not pinned
+### 5. Owner goroutine helper API surface is not pinned
 
-The page rules out internal call marshalling but does not show what
-`RuntimeHandle`'s public API looks like under that constraint.
-Concretely: does `RuntimeHandle` expose `RunOnce()` and `PollEvent()`
-directly so the caller drives the pump loop? Does it expose any
-`WaitForX` helpers, and if so do they assume the caller has already
-called `runtime.LockOSThread`? Without a pinned public surface, two
-implementations following the page will diverge meaningfully.
+The page introduces the helper but does not pin the methods. Without
+that, two implementers will pick different method shapes
+(`Do(fn) error` vs `Run(fn) error` vs a more-typed shape). The
+helper is small but having a single canonical API makes adapters
+above it portable across consumers.
 
-### 7. The `*Error` shape is not pinned
-
-The cross-language page says "Map each C status category to a stable,
-idiomatic public error representation." Idiomatic Go is `error` plus
-sentinel matching via `errors.Is`, but the specific shape of the
-error type (struct fields, sentinel values, `Is` method) varies.
-Pinning this in the Go-specific page keeps bindings consistent across
-implementers.
-
-### 8. Handle struct layout is not pinned
+### 6. Handle struct layout is not pinned
 
 What's inside `RuntimeHandle`? Native pointer + parent + closed flag
-(atomic? mutex?) + finalizer-context? An LLM produces something
-plausible but two LLMs will produce two different shapes. A short
-example struct definition resolves this.
+(atomic? mutex?) + finalizer-context? An implementer produces
+something plausible but two implementers will diverge on which Go
+synchronisation primitive guards the closed state, which then
+affects whether `Close()` is safe to call from any goroutine.
 
-### 9. Idempotent + nil-safe `Close()` is not pinned
+### 7. Idempotent + nil-safe `Close()` is not pinned
 
-`Close()` should be callable on a nil receiver and on an
-already-closed handle without error. The page mentions release once
-makes later release calls no-ops, but doesn't extend to nil-receiver
-safety, which is a Go convention worth stating.
+Standard Go convention is that `Close()` on a nil receiver returns
+nil and that calling on an already-closed handle is a no-op. The
+page mentions release-once idempotency but does not extend to
+nil-receiver safety.
 
-### 10. Constants generation is not addressed
+### 8. Constants generation is not addressed
 
-C enum values flow into typed Go constants. The page does not say
-whether to handwrite them, generate them, or where the generator's
-output lives. With ~200 enum values across the C API, this is a real
-choice that bindings will have to make and that should be pinned.
+The C API exposes ~200 enum values. The page does not say whether
+to handwrite these, generate them, or where the generator's output
+lives. Both choices are defensible; one needs to be pinned.
 
-### 11. `runtime.Pinner` usage is mentioned but not shown
-
-The page lists `runtime.Pinner` in resources but doesn't show when
-the binding should reach for it. With `cgo.Handle` covering most
-callback state and cgo's automatic per-call pinning covering most
-buffers, Pinner is a relatively rare tool. A one-line statement of
-the case ("use Pinner when retaining a Go-allocated buffer in a C
-struct field across multiple C calls") would clarify.
-
-### 12. There is no end-to-end example
-
-The Java conventions page opens with a five-line example showing
-runtime → map → render-session lifecycle. The Go page has none. A
-30-line example anchoring every other decision (struct shape, error
-return, owner-thread pinning, render-still flow, native readback,
-close order) would be more useful than any individual section.
-
-### 13. Strings handling is not Go-specific
+### 9. Strings handling needs Go-specific guidance
 
 The cross-language page covers UTF-8 / NUL rejection. Go-specific
-strings choices — `C.GoStringN` over `C.GoString` when length is
-known, byte-slice-to-`*C.char` conversion via `unsafe.Pointer(&b[0])`,
-`C.CString` + `defer C.free` for borrowed Go-string inputs — would
+choices — `C.GoStringN` over `C.GoString` when length is known,
+`(*C.char)(unsafe.Pointer(&b[0]))` for `mln_string_view` byte-slice
+inputs, `C.CString` + `defer C.free` for borrowed inputs — would
 prevent inconsistent string handling across calls.
 
-### 14. The adapter-layer / wrapper-layer relationship is not framed
+### 10. There is no end-to-end example
 
-Upstream's "no internal dispatcher" decision implicitly defers
-ergonomic concerns (Context cancellation, render-pump loops,
-goroutine-friendly handle access, parallel pools) to wrappers above
-the binding. Stating this explicitly in the page sets reader
-expectations and prevents implementers from accidentally pulling
-ergonomic concerns into the binding to "make it more usable."
+The Java conventions page opens with a five-line example showing
+runtime → map → render-session lifecycle. The Go page has none.
+With the new direct-API + owner-helper split, an example that
+shows the helper-driven shape would anchor the helper's API and
+demonstrate how the layers fit.
 
-## Proposed replacement page
+## Proposed Replacement Page
 
 The text below is a direct candidate for replacing
 `docs/src/content/docs/development/bindings-go.md`. It keeps every
-upstream design decision, fills the gaps above, and stays at a
-length comparable to the existing Java FFM conventions page.
+upstream design decision from the revised page (direct handle API
+as base layer, opt-in owner goroutine helper, no application-level
+scheduling, `Handle` suffix, `NativePointer` value type,
+`cgo.Handle` for callback state) and fills the outstanding gaps.
+
+The page deliberately does not introduce `context.Context`,
+internal cancellation channels, parallel-renderer pools, or
+`Session`-style ergonomic bundles. Those concerns sit in adapter
+packages above the binding, written by downstream consumers.
 
 ````markdown
 ---
@@ -173,13 +149,25 @@ sidebar:
 
 ## Scope
 
-The Go binding is a thin, low-level layer over the public C API. It
-exposes the C API's runtime, map, render session, event, callback,
-and render target model with Go ownership, error, memory, and
-threading rules. It does not internalise threading, cancellation,
-goroutine-friendly handle access, or parallel-renderer scheduling;
-those concerns belong in adapter packages above this binding,
-written by downstream consumers.
+The Go binding is a thin, low-level layer over the public C API.
+It exposes the C API's runtime, map, render session, event,
+callback, and render target model with Go ownership, error,
+memory, and threading rules.
+
+The binding ships in two layers:
+
+- **Direct handle API.** Calls run on the calling goroutine and
+  return the C `WrongThread` error when they reach the wrong
+  owner thread. The binding does not silently marshal calls.
+- **Opt-in owner goroutine helper.** A small helper that locks an
+  OS thread, runs owner-thread calls on it, and pumps runtime
+  events. Limited to generic owner-thread execution and event
+  draining; does not own or manage handle lifecycles.
+
+Application scheduling, `context.Context` integration,
+parallel-renderer pools, and framework integration belong in
+adapter packages above the binding, written by downstream
+consumers.
 
 The binding uses `cgo` over the public C headers and keeps raw C
 declarations private. It targets Go 1.21 or newer for
@@ -193,9 +181,9 @@ The binding ships as one Go module:
 github.com/maplibre/maplibre-native-go
 ```
 
-Public types live in package `maplibre`. Internal C wiring stays in
-the same package via cgo's `import "C"` mechanism; downstream
-adapters consume only the public surface.
+Public types live in package `maplibre`. The internal cgo wiring
+stays in the same package; downstream adapters consume only the
+public surface.
 
 The binding links against `libmaplibre-native-c` via pkg-config:
 
@@ -290,8 +278,8 @@ type Error struct {
     Message string  // mbgl thread-local diagnostic captured at failure site
 }
 
-func (e *Error) Error() string { /* "Op: STATUS_NAME: message" */ }
-func (e *Error) Is(target error) bool { /* matches by Status */ }
+func (e *Error) Error() string  { /* "Op: STATUS_NAME: message" */ }
+func (e *Error) Is(target error) bool  { /* matches by Status */ }
 ```
 
 Sentinel `*Error` values for `errors.Is` matching:
@@ -311,9 +299,10 @@ if errors.Is(err, maplibre.ErrInvalidState) { /* ... */ }
 ## Diagnostics
 
 `mln_thread_last_error_message` is thread-local. Go goroutines
-migrate across OS threads. The binding reads the diagnostic
-immediately after the failing C call, in the same goroutine, before
-any cgo call or channel operation that could yield:
+migrate across OS threads. Status-returning calls capture the
+diagnostic on the same OS thread that returned the status. Use a
+short `runtime.LockOSThread` window to keep the C call and the
+diagnostic read together:
 
 ```go
 func statusError(op string, status C.mln_status) error {
@@ -326,8 +315,12 @@ func statusError(op string, status C.mln_status) error {
 }
 ```
 
-`statusError` is called inline at every status-checking site. The
+`statusError` is called inline at every status-checking site,
+inside the same `LockOSThread` window as the failing C call. The
 binding does not defer diagnostic capture across function returns.
+The owner goroutine helper performs all calls on its locked OS
+thread, so callers using the helper inherit this behaviour
+automatically.
 
 ## Owned Handles
 
@@ -336,17 +329,19 @@ explicit `Close() error` method:
 
 ```go
 type RuntimeHandle struct {
-    ptr *C.mln_runtime  // private; nil after Close
+    ptr    *C.mln_runtime  // private; nil after Close
+    closed atomic.Bool     // observable from any goroutine
+    // optional debug leak context
 }
 
 func NewRuntime(opts RuntimeOptions) (*RuntimeHandle, error)
-func (r *RuntimeHandle) Close() error  // idempotent, nil-receiver safe
+func (r *RuntimeHandle) Close() error
 ```
 
 A handle stores the native pointer, parent handles required for
-native validity, open-or-closed state, and optional debug leak
-context. `Close()` is callable on a nil receiver and on an already-
-closed handle, returning nil in both cases.
+native validity, an open-or-closed flag, and optional debug leak
+context. `Close()` is callable on a nil receiver and on an
+already-closed handle, returning nil in both cases.
 
 Parents stay reachable while children are live. `MapHandle` keeps
 its `*RuntimeHandle` reachable; `RenderSessionHandle` keeps its
@@ -355,12 +350,12 @@ children is impossible by reachability.
 
 `MapProjectionHandle` is created from a `MapHandle`, owns a
 standalone transform snapshot, and releases via
-`mln_map_projection_destroy`. After creation it does not depend on
-the source `MapHandle` for native validity; map camera or projection
-changes after the snapshot do not update it.
+`mln_map_projection_destroy`. After creation it does not depend
+on the source `MapHandle` for native validity; map camera or
+projection changes after the snapshot do not update it.
 
-Closing a parent before its children returns `ErrInvalidState`. The
-binding does not cascade-close.
+Closing a parent before its children returns `ErrInvalidState`.
+The binding does not cascade-close.
 
 Under the `mln_debug` build tag, `runtime.SetFinalizer` reports
 leaked handles to stderr. The finalizer reports only; it does not
@@ -369,13 +364,12 @@ GC thread.
 
 ## Owner Threads
 
-Go goroutines do not preserve OS-thread identity. Callers use
-`runtime.LockOSThread` when they need deterministic owner-thread
-affinity. The low-level binding preserves caller execution:
-ordinary calls run on the calling goroutine and return
-`StatusWrongThread` when they reach the wrong owner thread. The
-binding does not silently marshal ordinary calls to a different
-goroutine or OS thread.
+Goroutines do not preserve OS-thread identity. Callers using the
+direct handle API call `runtime.LockOSThread` when they need
+deterministic owner-thread affinity. Ordinary calls run on the
+calling goroutine and return `StatusWrongThread` when they reach
+the wrong owner thread. The binding does not silently marshal
+ordinary calls to a different goroutine or OS thread.
 
 Public type boundaries align with C owner concepts:
 
@@ -386,37 +380,67 @@ MapProjectionHandle   projection owner thread in C
 RenderSessionHandle   session owner thread in C
 ```
 
-Adapter layers above this binding may run a per-runtime goroutine
-pinned via `runtime.LockOSThread` and route the binding's calls
-through it; the binding does not provide that machinery.
+The binding ships an opt-in owner goroutine helper that locks an
+OS thread, runs owner-thread calls on it, and pumps runtime
+events:
+
+```go
+type Owner struct { /* private */ }
+
+// StartOwner spawns a goroutine that calls runtime.LockOSThread
+// for the lifetime of the Owner.
+func StartOwner() *Owner
+
+// Run executes fn on the Owner's locked OS thread, blocking until
+// fn returns. Calls inside fn run on the Owner's thread.
+func (o *Owner) Run(fn func() error) error
+
+// PumpEvents drains rt's event queue, calling consume for each
+// event. It calls mln_runtime_run_once between drains. Returns
+// when consume returns true, the deadline passes, or a fatal C
+// error occurs. PumpEvents must be called via Run.
+func (o *Owner) PumpEvents(rt *RuntimeHandle, deadline time.Time,
+    consume func(Event) bool) error
+
+// Stop unlocks the OS thread. Caller must Close all handles
+// before Stop. Idempotent.
+func (o *Owner) Stop() error
+```
+
+The Owner does not own `RuntimeHandle`, `MapHandle`, or
+`RenderSessionHandle`. Callers create handles inside `Run` and
+close them inside `Run` before `Stop`. The Owner is limited to
+generic owner-thread execution and event draining; application
+scheduling and framework integration stay above it.
 
 ## Strings
 
 Encode Go strings as UTF-8 at the C boundary.
 
-For `const char*` inputs, allocate with `C.CString` and free
-immediately:
+For null-terminated `const char*` inputs, allocate with
+`C.CString` and free immediately:
 
 ```go
 cs := C.CString(s)
 defer C.free(unsafe.Pointer(cs))
-// ... pass cs to C, return ...
+// ... pass cs to C ...
 ```
 
-The binding does not retain `*C.char` pointers past the C call that
-consumes them.
+The binding does not retain `*C.char` pointers past the C call
+that consumes them. The binding rejects strings containing
+embedded NUL for null-terminated inputs.
 
 For explicit-length `mln_string_view` inputs, pass the byte slice
 directly:
 
 ```go
-cs := (*C.char)(unsafe.Pointer(&b[0]))
+data := (*C.char)(unsafe.Pointer(&b[0]))
 size := C.size_t(len(b))
 ```
 
 For `const char*` outputs whose length is known, copy with
-`C.GoStringN(ptr, length)` rather than `C.GoString(ptr)` to avoid an
-unnecessary `strlen` scan.
+`C.GoStringN(ptr, length)` rather than `C.GoString(ptr)` to avoid
+an unnecessary `strlen` scan.
 
 ## Native Pointers
 
@@ -437,7 +461,7 @@ surfaces).
 
 Native data exposed only during a callback's lifetime uses a
 callback-scoped accessor pattern. The frame type is not freely
-returned and not publicly closable; the binding acquires before
+returned and not publicly closeable; the binding acquires before
 the callback runs and releases when it returns or panics.
 
 ```go
@@ -463,36 +487,37 @@ Accessor names carry the `Unsafe` suffix, matching the
 cross-language convention. They return `ErrInvalidState` after the
 callback scope ends.
 
-The C side rejects nested acquires, render updates, resize, detach,
-and destroy while a frame is acquired. The binding relies on those
-checks and always releases the frame in a `defer` after the
-callback returns.
+The C side rejects nested acquires, render updates, resize,
+detach, and destroy while a frame is acquired. The binding relies
+on those checks and always releases the frame in a `defer` after
+the callback returns.
 
 ## Native Memory
 
 Per-call temporary storage uses Go-allocated buffers, byte slices,
-and `C.CString`-allocated strings released before return. Cgo pins
-Go-allocated slices for the duration of the C call.
+and `C.CString`-allocated strings released before return. cgo
+pins Go-allocated slices for the duration of the C call.
 
-Object-owned native storage uses `C.malloc` / `C.free` paired with a
-Go owner that frees in `Close()` or in an explicit teardown path.
-Used for callback `user_data` cells (see Callbacks) and for
+Object-owned native storage uses `C.malloc` / `C.free` paired with
+a Go owner that frees in `Close()` or in an explicit teardown
+path. This covers callback `user_data` cells (see Callbacks) and
 `const char*` values mbgl retains across calls.
 
 Large explicit buffers reused across renders use caller-owned Go
 slices passed to readback functions. The binding writes into the
 slice and returns; no per-render cgo allocation.
 
-`runtime.Pinner` is reserved for cases where the binding must store
-a pointer to Go-allocated memory in a C struct that mbgl reads
-across multiple cgo calls without going through a `cgo.Handle`. Most
-callback state goes through `cgo.Handle` and does not require a
-Pinner.
+`runtime.Pinner` is reserved for cases where the binding must
+store a pointer to Go-allocated memory in a C struct that mbgl
+reads across multiple cgo calls without going through a
+`cgo.Handle`. Most callback state goes through `cgo.Handle` and
+does not require a Pinner.
 
 ## Callbacks
 
-The C API exposes process-global, runtime-scoped, and request-scoped
-callbacks. Each is plumbed through a `//export`'d Go trampoline:
+The C API exposes process-global, runtime-scoped, and
+request-scoped callbacks. Each is plumbed through a `//export`'d
+Go trampoline:
 
 ```go
 //export mlnGoLogTrampoline
@@ -512,8 +537,8 @@ The trampoline lives in a Go file that uses cgo's `//export`
 directive. The C side requires a function pointer with the C ABI's
 typed signature (`mln_log_callback`). Because cgo's auto-generated
 `_cgo_export.h` declares the trampoline with `char*` parameters
-rather than `const char*`, the typed-cast accessors live in a small
-companion C translation unit:
+rather than `const char*`, the typed-cast accessors live in a
+small companion C translation unit:
 
 ```c
 // trampolines.c — compiled with the binding
@@ -525,10 +550,10 @@ mln_log_callback mlnGoGetLogTrampoline(void) {
 }
 ```
 
-User data passes through cgo as a small C-allocated cell containing
-a `runtime/cgo.Handle` value. The cell gives mbgl a stable native
-address; the handle keeps the Go callback closure reachable across
-the cgo boundary:
+User data passes through cgo as a small C-allocated cell
+containing a `runtime/cgo.Handle` value. The cell gives mbgl a
+stable native address; the handle keeps the Go callback closure
+reachable across the cgo boundary:
 
 ```go
 hp := C.malloc(C.size_t(unsafe.Sizeof(uintptr(0))))
@@ -543,20 +568,21 @@ t.user_data = hp
 The owning binding type (e.g. `RuntimeHandle`) frees both the cell
 and the handle in `Close()` after the C side is destroyed.
 
-Callbacks recover panics at the trampoline boundary and convert them
-to the documented C callback behaviour ("no rewrite", OK status, or
-similar). Panics never unwind through cgo.
+Callbacks recover panics at the trampoline boundary and convert
+them to the documented C callback behaviour ("no rewrite", OK
+status, or similar). Panics never unwind through cgo.
 
 Callbacks may run on MapLibre worker, network, logging, or render
 threads. Implementations must be thread-safe, return quickly, and
-must not call back into the binding. Borrowed C-side request fields
-are copied into Go values before the Go callback returns when the
-binding needs them later.
+must not call back into the binding. Borrowed C-side request
+fields are copied into Go values before the Go callback returns
+when the binding needs them later.
 
-A handled resource request uses a Go object that owns the provider's
-reference to the C request handle. It enforces one-shot completion
-and exactly-once release. Completion and cancellation checks may
-run from any goroutine when the C API allows it.
+A handled resource request uses a Go object that owns the
+provider's reference to the C request handle. It enforces
+one-shot completion and exactly-once release. Completion and
+cancellation checks may run from any goroutine when the C API
+allows it.
 
 ## Constants
 
@@ -575,82 +601,97 @@ Hand-written enums beyond the constants table are not introduced.
 
 ## Worked Example
 
+Render one still image using the owner goroutine helper. The
+helper handles `runtime.LockOSThread` and the runtime event pump;
+the example focuses on handle lifecycle and the render-still
+flow.
+
 ```go
 package main
 
 import (
     "fmt"
     "log"
-    "runtime"
+    "time"
 
     maplibre "github.com/maplibre/maplibre-native-go"
 )
 
 func main() {
-    // The binding does not marshal calls. Pin this goroutine to the
-    // OS thread that becomes the runtime / map / render-session
-    // owner thread.
-    runtime.LockOSThread()
-    defer runtime.UnlockOSThread()
+    owner := maplibre.StartOwner()
+    defer owner.Stop()
 
-    rt, err := maplibre.NewRuntime(maplibre.RuntimeOptions{})
-    if err != nil { log.Fatal(err) }
-    defer rt.Close()
+    var (
+        rt   *maplibre.RuntimeHandle
+        m    *maplibre.MapHandle
+        sess *maplibre.RenderSessionHandle
+    )
 
-    m, err := rt.NewMap(maplibre.MapOptions{Width: 256, Height: 256})
-    if err != nil { log.Fatal(err) }
-    defer m.Close()
+    if err := owner.Run(func() error {
+        var err error
+        rt, err = maplibre.NewRuntime(maplibre.RuntimeOptions{})
+        if err != nil { return err }
+        m, err = rt.NewMap(maplibre.MapOptions{Width: 256, Height: 256})
+        if err != nil { return err }
+        sess, err = m.AttachOwnedTexture(256, 256, 1.0)
+        if err != nil { return err }
+        return m.SetStyleJSON(`{"version":8,"sources":{},"layers":[]}`)
+    }); err != nil {
+        log.Fatal(err)
+    }
+    defer owner.Run(func() error { return sess.Close() })
+    defer owner.Run(func() error { return m.Close() })
+    defer owner.Run(func() error { return rt.Close() })
 
-    if err := m.SetStyleJSON(`{"version":8,"sources":{},"layers":[]}`); err != nil {
+    deadline := time.Now().Add(10 * time.Second)
+    if err := owner.PumpEvents(rt, deadline, func(ev maplibre.Event) bool {
+        return ev.Source == m && ev.Type == maplibre.EventStyleLoaded
+    }); err != nil {
         log.Fatal(err)
     }
 
-    sess, err := m.AttachOwnedTexture(256, 256, 1.0)
-    if err != nil { log.Fatal(err) }
-    defer sess.Close()
-
-    // Static-render flow: request, pump run_once + drain events,
-    // readback. Caller owns the loop, including idle backoff
-    // (sleep, channel select, etc.) when the queue is empty.
-    if err := m.RequestStillImage(); err != nil { log.Fatal(err) }
-    for done := false; !done; {
-        if err := rt.RunOnce(); err != nil { log.Fatal(err) }
-        for {
-            ev, ok, err := rt.PollEvent()
-            if err != nil { log.Fatal(err) }
-            if !ok { break }
-            if ev.Source != m { continue }
-            switch ev.Type {
-            case maplibre.EventStillImageFinished:
-                done = true
-            case maplibre.EventStillImageFailed,
-                 maplibre.EventMapLoadingFailed,
-                 maplibre.EventRenderError:
-                log.Fatalf("render failed: %v", ev)
-            }
-        }
+    if err := owner.Run(func() error { return m.RequestStillImage() }); err != nil {
+        log.Fatal(err)
+    }
+    if err := owner.PumpEvents(rt, deadline, func(ev maplibre.Event) bool {
+        return ev.Source == m && ev.Type == maplibre.EventStillImageFinished
+    }); err != nil {
+        log.Fatal(err)
     }
 
-    rgba, info, err := sess.ReadPremultipliedRGBA8()
-    if err != nil { log.Fatal(err) }
+    var (
+        rgba []byte
+        info maplibre.TextureImageInfo
+    )
+    if err := owner.Run(func() error {
+        var err error
+        rgba, info, err = sess.ReadPremultipliedRGBA8()
+        return err
+    }); err != nil {
+        log.Fatal(err)
+    }
     fmt.Printf("rendered %dx%d (%d bytes)\n", info.Width, info.Height, len(rgba))
 }
 ```
 
-Adapter packages above the binding can wrap this loop in an
-ergonomic API with `context.Context` cancellation, an internal
-dispatcher goroutine, idle-cadence pumping, and concurrent rendering
-across multiple runtimes. Such adapters are out of scope for the
-low-level binding.
+The direct handle API is also available without the helper.
+Callers using it own the `runtime.LockOSThread` window, the
+`mln_runtime_run_once` pump, and the event drain loop themselves.
+
+Adapter packages above the binding wrap one or both layers with
+`context.Context` cancellation, parallel-runtime pools, and
+framework integration. Such adapters are out of scope for the
+binding.
 
 ## Testing
 
 `go test -race ./...` runs the test suite against a real built
 `libmaplibre-native-c`. The binding does not mock the C ABI.
 
-Tests cover the language-adaptation invariants: idempotent `Close`,
-`errors.Is` sentinel matching, diagnostic capture under goroutine
-migration scenarios, callback panic recovery, and one-shot resource
-request completion. C ABI tests cover native behaviour;
-binding-level tests prove the Go layer preserves it.
+Tests cover the language-adaptation invariants: idempotent
+`Close`, `errors.Is` sentinel matching, diagnostic capture under
+goroutine migration, callback panic recovery, one-shot resource
+request completion, owner-helper start and stop ordering, and
+`PumpEvents` deadline behaviour. C ABI tests cover native
+behaviour; binding-level tests prove the Go layer preserves it.
 ````
